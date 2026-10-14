@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Antigravity Chrome Agent Bridge",
+  "version": "1.0.0",
+  "description": "Simple and intuitive browser assistant.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "debugger",
+    "storage",
+    "alarms",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Chrome Assistant"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
