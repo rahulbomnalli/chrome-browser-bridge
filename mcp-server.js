@@ -425,6 +425,73 @@ const TOOLS = [
       },
       required: ["url"]
     }
+  },
+  {
+    name: "chrome_scroll",
+    description: "Scroll the page smoothly up or down by pixels without full-page reloads.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        direction: { type: "string", description: "'up' or 'down' (default 'down')" },
+        amount: { type: "number", description: "Number of pixels to scroll (default 400)" },
+        tabId: { type: "number", description: "Optional tab ID" }
+      }
+    }
+  },
+  {
+    name: "chrome_select",
+    description: "Select an option from a <select> dropdown by option value or visible text.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of the <select> element" },
+        value: { type: "string", description: "Option value or visible text to select" },
+        tabId: { type: "number", description: "Optional tab ID" }
+      },
+      required: ["selector", "value"]
+    }
+  },
+  {
+    name: "chrome_set_memory",
+    description: "Persist solutions, selectors, credentials, or task recovery notes into Chrome persistent storage so problems and patterns are remembered permanently across sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Unique identifier/domain/task key for the memory" },
+        value: { description: "Memory value (string, object, or array) describing the fix, selector, or pattern" }
+      },
+      required: ["key", "value"]
+    }
+  },
+  {
+    name: "chrome_get_memory",
+    description: "Recall persisted task memory, past failure fixes, domain selectors, or session patterns to avoid repeating past errors.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Optional specific key to retrieve. If omitted, returns all stored memories." }
+      }
+    }
+  },
+  {
+    name: "chrome_clear_memory",
+    description: "Clear a specific memory key or wipe all stored agent task memory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Optional key to delete. If omitted, clears all memory." }
+      }
+    }
+  },
+  {
+    name: "chrome_dismiss_overlays",
+    description: "Automatically find and dismiss screen overlays, cookie consent popups, modal backdrops, dialogs, and banners without failing page interaction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: { type: "number", description: "Optional tab ID" }
+      }
+    }
   }
 ];
 
@@ -652,6 +719,47 @@ async function handleToolCall(name, args) {
         method: args.method || "GET",
         headers: args.headers || {},
         body: args.body,
+        tabId: args.tabId
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_scroll": {
+      const res = await postAction("scroll", {
+        direction: args.direction || "down",
+        amount: args.amount || 400,
+        tabId: args.tabId
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_select": {
+      const res = await postAction("select", {
+        selector: args.selector,
+        value: args.value,
+        tabId: args.tabId
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_set_memory": {
+      const res = await postAction("set_memory", {
+        key: args.key,
+        value: args.value
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_get_memory": {
+      const res = await postAction("get_memory", {
+        key: args.key
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_clear_memory": {
+      const res = await postAction("clear_memory", {
+        key: args.key
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_dismiss_overlays": {
+      const res = await postAction("dismiss_overlays", {
         tabId: args.tabId
       });
       return JSON.stringify(res);

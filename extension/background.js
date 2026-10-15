@@ -449,21 +449,27 @@ async function getTargetTab(tabId) {
       activeAgentWindowId = null;
     }
   }
+  const isUnrestricted = (t) => t && t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("edge://") && !t.url.startsWith("about:");
+
   const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (activeTab) {
+  if (activeTab && isUnrestricted(activeTab)) {
     activeDesignatedTabId = activeTab.id;
     return activeTab;
   }
-  const [anyActiveTab] = await chrome.tabs.query({ active: true });
-  if (anyActiveTab) {
-    activeDesignatedTabId = anyActiveTab.id;
-    return anyActiveTab;
+  const anyActiveTabs = await chrome.tabs.query({ active: true });
+  const validActiveTab = anyActiveTabs.find(isUnrestricted);
+  if (validActiveTab) {
+    activeDesignatedTabId = validActiveTab.id;
+    return validActiveTab;
   }
   const allTabs = await chrome.tabs.query({});
-  if (allTabs.length > 0) {
-    activeDesignatedTabId = allTabs[0].id;
-    return allTabs[0];
+  const validTab = allTabs.find(isUnrestricted);
+  if (validTab) {
+    activeDesignatedTabId = validTab.id;
+    return validTab;
   }
+  if (activeTab) return activeTab;
+  if (allTabs.length > 0) return allTabs[0];
   throw new Error("No browser tabs available.");
 }
 
@@ -1094,6 +1100,52 @@ async function handleActionInner(action, params) {
       return typeResult;
     }
 
+    // SMOOTH SCROLL (up / down / element)
+    case "scroll": {
+      const tab = await getTargetTab(params.tabId);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (direction, amount) => {
+          const dy = direction === "up" ? -Math.abs(amount || 400) : Math.abs(amount || 400);
+          window.scrollBy({ top: dy, behavior: "smooth" });
+          return { scrollX: window.scrollX, scrollY: window.scrollY + dy, direction };
+        },
+        args: [params.direction || "down", params.amount || 400]
+      });
+      return results[0]?.result || { scrolled: true };
+    }
+
+    // NATIVE SELECT DROPDOWN OPTION
+    case "select": {
+      const tab = await getTargetTab(params.tabId);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (selector, value) => {
+          const el = document.querySelector(selector);
+          if (!el) throw new Error(`Select element not found: ${selector}`);
+          if (el.tagName.toLowerCase() !== "select") throw new Error(`Target is not a <select> element: ${selector}`);
+          let matched = false;
+          let selectedText = "";
+          for (let opt of el.options) {
+            if (opt.value === value || opt.text.trim().toLowerCase() === String(value).trim().toLowerCase()) {
+              el.value = opt.value;
+              selectedText = opt.text;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            el.value = value;
+          }
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { selectedValue: el.value, selectedText: selectedText || el.value };
+        },
+        args: [params.selector, params.value]
+      });
+      return results[0]?.result || {};
+    }
+
     // NATIVE KEY PRESS (Enter, Escape, Tab, Backspace, shortcuts)
     case "press": {
       const tab = await getTargetTab(params.tabId);
@@ -1617,6 +1669,50 @@ async function handleActionInner(action, params) {
       return { macros: Object.keys(macros).map(k => ({ name: k, description: macros[k].description, stepsCount: macros[k].steps.length })) };
     }
 
+    // ADAPTIVE TASK & PROBLEM MEMORY SYSTEM
+    case "set_memory":
+    case "remember": {
+      const { key, value } = params;
+      if (!key) throw new Error("Missing 'key' for memory storage");
+      const mem = await chrome.storage.local.get("agent_memory").then(r => r.agent_memory || {});
+      mem[key] = { value, updatedAt: new Date().toISOString() };
+      await chrome.storage.local.set({ agent_memory: mem });
+      return { success: true, key, stored: true };
+    }
+
+    case "get_memory":
+    case "recall": {
+      const { key } = params;
+      const mem = await chrome.storage.local.get("agent_memory").then(r => r.agent_memory || {});
+      if (key) {
+        return { key, found: mem[key] !== undefined, entry: mem[key] || null };
+      }
+      return { memory: mem };
+    }
+
+    case "clear_memory": {
+      const { key } = params;
+      if (key) {
+        const mem = await chrome.storage.local.get("agent_memory").then(r => r.agent_memory || {});
+        delete mem[key];
+        await chrome.storage.local.set({ agent_memory: mem });
+        return { success: true, deletedKey: key };
+      }
+      await chrome.storage.local.remove("agent_memory");
+      return { success: true, cleared: true };
+    }
+
+    // AUTOMATIC SCREEN OVERLAY & MODAL DISMISSER
+    case "dismiss_overlays":
+    case "close_modal": {
+      const tab = await getTargetTab(params.tabId);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageDismissOverlays
+      });
+      return results[0]?.result || { dismissed: 0 };
+    }
+
     case "wait_for_user":
     case "checkpoint": {
       const tab = await getTargetTab(params.tabId);
@@ -1641,6 +1737,8 @@ async function handleActionInner(action, params) {
       const maxMs = timeoutSec * 1000;
       let reasonCleared = "timeout";
 
+      let enteredValue = null;
+
       while (Date.now() - startTime < maxMs) {
         await new Promise(r => setTimeout(r, 500));
         try {
@@ -1651,6 +1749,7 @@ async function handleActionInner(action, params) {
           const st = checkRes[0]?.result;
           if (st && st.cleared) {
             reasonCleared = st.reason || "user_action";
+            enteredValue = st.value || null;
             break;
           }
         } catch {
@@ -1672,6 +1771,7 @@ async function handleActionInner(action, params) {
         success: true,
         resumed: true,
         clearedBy: reasonCleared,
+        value: enteredValue,
         elapsedSeconds: Math.round((Date.now() - startTime) / 1000)
       };
     }
@@ -2415,20 +2515,63 @@ function inPageShowCheckpointPrompt(reason, timeoutSec) {
       document.body.appendChild(banner);
     }
 
+    const isPasswordNeeded = /password|pin|code|credential|unlock|2fa/i.test(reason);
+
     banner.innerHTML = `
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:8px; background:rgba(99, 102, 241, 0.2); font-size:15px;">🔔</span>
-        <div>
-          <div style="font-weight:700; font-size:13px; color:#e0e7ff; letter-spacing:-0.2px;">AI Assistant Checkpoint</div>
-          <div style="font-size:12px; color:#94a3b8; max-width:380px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${reason}</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:8px; background:rgba(99, 102, 241, 0.2); font-size:15px;">🔔</span>
+            <div>
+              <div style="font-weight:700; font-size:13px; color:#e0e7ff; letter-spacing:-0.2px;">AI Assistant Action Required</div>
+              <div style="font-size:12px; color:#94a3b8; max-width:380px;">${reason}</div>
+            </div>
+          </div>
+          <button id="__bridge_resume_btn" style="
+            background: #6366f1; color: white; border: none; border-radius: 8px;
+            padding: 6px 14px; font-weight: 600; font-size: 12px; cursor: pointer;
+            transition: all 0.15s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+            white-space: nowrap;
+          ">Resume Agent</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:2px;">
+          <input id="__bridge_checkpoint_input" type="${isPasswordNeeded ? 'password' : 'text'}" placeholder="${isPasswordNeeded ? 'Enter password/value here or in page...' : 'Provide input or complete in page...'}" style="
+            flex:1; background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 6px;
+            color: #f8fafc; padding: 6px 10px; font-size: 12px; outline: none; box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+          " />
+          <button id="__bridge_submit_val_btn" style="
+            background: #10b981; color: white; border: none; border-radius: 6px;
+            padding: 6px 12px; font-weight: 600; font-size: 11px; cursor: pointer;
+          ">Submit</button>
         </div>
       </div>
-      <button id="__bridge_resume_btn" style="
-        background: #6366f1; color: white; border: none; border-radius: 8px;
-        padding: 6px 14px; font-weight: 600; font-size: 12px; cursor: pointer;
-        transition: all 0.15s ease; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
-      ">Resume Agent</button>
     `;
+
+    const inp = banner.querySelector('#__bridge_checkpoint_input');
+    const submitValBtn = banner.querySelector('#__bridge_submit_val_btn');
+
+    const handleInputSubmit = () => {
+      const val = inp?.value;
+      if (val) {
+        window.__bridge_checkpoint_input_value = val;
+        // Auto fill into active password input if present on page
+        const pagePw = document.querySelector('input[type="password"], input[type="text"]:focus');
+        if (pagePw) {
+          pagePw.value = val;
+          pagePw.dispatchEvent(new Event('input', { bubbles: true }));
+          pagePw.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+      window.__bridge_checkpoint_cleared = true;
+    };
+
+    if (submitValBtn) submitValBtn.onclick = handleInputSubmit;
+    if (inp) {
+      inp.onkeydown = (e) => {
+        if (e.key === 'Enter') handleInputSubmit();
+      };
+      inp.focus();
+    }
 
     const btn = banner.querySelector('#__bridge_resume_btn');
     if (btn) {
@@ -2473,7 +2616,11 @@ function inPageShowCheckpointPrompt(reason, timeoutSec) {
 
 function inPageCheckCheckpointStatus() {
   if (window.__bridge_checkpoint_cleared) {
-    return { cleared: true, reason: 'user_clicked_resume' };
+    return {
+      cleared: true,
+      reason: window.__bridge_checkpoint_input_value ? 'user_provided_input' : 'user_clicked_resume',
+      value: window.__bridge_checkpoint_input_value || null
+    };
   }
   if (window.__bridge_had_password) {
     const pw = document.querySelector('input[type="password"]');
@@ -2486,6 +2633,58 @@ function inPageCheckCheckpointStatus() {
     }
   }
   return { cleared: false };
+}
+
+function inPageDismissOverlays() {
+  let dismissedCount = 0;
+  // 1. Common modal close button selectors
+  const closeSelectors = [
+    'button[aria-label*="close" i]',
+    'button[aria-label*="dismiss" i]',
+    '[aria-label*="close" i]',
+    '.modal-close',
+    '.close-modal',
+    '.overlay-close',
+    '.dialog-close',
+    '[data-dismiss="modal"]',
+    '[data-bs-dismiss="modal"]',
+    '#close-button',
+    '.btn-close'
+  ];
+
+  for (const sel of closeSelectors) {
+    try {
+      const btns = Array.from(document.querySelectorAll(sel));
+      for (const btn of btns) {
+        const s = window.getComputedStyle(btn);
+        if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
+          btn.click();
+          dismissedCount++;
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Cookie consent banner buttons (Accept All / Got it / Agree / Dismiss)
+  const consentTexts = ['accept all', 'accept', 'agree', 'got it', 'i understand', 'close', 'dismiss', 'decline'];
+  const candidates = Array.from(document.querySelectorAll('button, a[role="button"]'));
+  for (const c of candidates) {
+    const t = (c.innerText || c.textContent || '').trim().toLowerCase();
+    if (consentTexts.includes(t)) {
+      const parent = c.closest('[class*="cookie" i], [id*="cookie" i], [class*="consent" i], [id*="consent" i], [class*="banner" i], [class*="modal" i]');
+      if (parent) {
+        c.click();
+        dismissedCount++;
+        break;
+      }
+    }
+  }
+
+  // 3. Dispatch Escape key to dismiss top modal
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+
+  return { dismissed: dismissedCount, success: true };
 }
 
 function inPageDismissCheckpoint() {
@@ -2501,6 +2700,7 @@ function inPageDismissCheckpoint() {
     if (style) style.remove();
     delete window.__bridge_checkpoint_cleared;
     delete window.__bridge_had_password;
+    delete window.__bridge_checkpoint_input_value;
   } catch {}
 }
 
