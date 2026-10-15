@@ -17,6 +17,7 @@ const keepAliveAgent = new http.Agent({
 async function postAction(action, params = {}) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ action, params });
+    const dynamicTimeout = (params.timeoutSec ? (params.timeoutSec * 1000 + 10000) : (params.timeoutMs || 25000));
     const req = http.request(
       `${BRIDGE_URL}/action`,
       {
@@ -27,7 +28,7 @@ async function postAction(action, params = {}) {
           "Content-Length": Buffer.byteLength(data),
           "Connection": "keep-alive"
         },
-        timeout: 20000,
+        timeout: dynamicTimeout,
       },
       (res) => {
         let body = "";

@@ -158,7 +158,8 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-async function executeAction(action, params = {}, timeoutMs = 15000) {
+async function executeAction(action, params = {}, timeoutMs) {
+  const dynamicTimeout = timeoutMs || (params.timeoutSec ? (params.timeoutSec * 1000 + 5000) : (params.timeoutMs || 30000));
   if (!extensionSocket || extensionSocket.readyState !== 1) {
     throw new Error(
       "Chrome browser is not connected to Bridge. " +
@@ -174,8 +175,8 @@ async function executeAction(action, params = {}, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`Timeout (${timeoutMs}ms) waiting for Chrome to execute '${action}'`));
-    }, timeoutMs);
+      reject(new Error(`Timeout (${dynamicTimeout}ms) waiting for Chrome to execute '${action}'`));
+    }, dynamicTimeout);
 
     pendingRequests.set(id, { resolve, reject, timer });
 
