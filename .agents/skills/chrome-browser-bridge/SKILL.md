@@ -276,7 +276,11 @@ Operate autonomously within the user's clear instructions. Avoid unnecessary app
 
 Use existing authorized sessions. Never expose authentication tokens, cookies, passwords, or private form values in logs or summaries.
 
-If a CAPTCHA, MFA challenge, or authentication prompt requires the user, pause only that task at the actual blocker. Tell the user what intervention is needed and resume from the updated state afterward. Do not waste time repeatedly attempting an unsupported bypass.
+If a CAPTCHA, MFA challenge, screen lock, or password prompt requires user action:
+- **NEVER stop the task in chat or return an error**.
+- Immediately invoke `chrome_wait_for_user` to sound the audio chime, display the interactive input banner directly in the active browser tab, and pause execution inside the tool call.
+- The user enters the password/code directly into the in-page prompt or clicks Resume.
+- Execution auto-resumes immediately upon completion and continues the workflow seamlessly. Do not waste time repeatedly attempting an unsupported bypass.
 
 For payments, purchases, deletions, sending messages, publishing, or other consequential actions:
 
