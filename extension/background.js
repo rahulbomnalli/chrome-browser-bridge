@@ -1507,7 +1507,38 @@ async function handleActionInner(action, params) {
           target: { tabId: tab.id },
           func: inPageGetSnapshot
         });
-        return results[0]?.result || {};
+        const snap = results[0]?.result || {};
+
+        // Universal Autonomous In-Tab Checkpoint: Check if snapshot found password fields or lock screen
+        const hasPassword = (snap.interactiveElements || []).some(el => el.type === 'password' || /password|enter pin|unlock code/i.test(el.placeholder || el.text || ''));
+        if (hasPassword) {
+          const userWaitRes = await handleActionInner("wait_for_user", {
+            tabId: tab.id,
+            reason: "Screen Lock / Password Required: Enter password or unlock to continue",
+            timeoutSec: 120
+          });
+          if (userWaitRes.value) {
+            const pwEl = (snap.interactiveElements || []).find(el => el.type === 'password');
+            if (pwEl) {
+              try {
+                await handleActionInner("type", {
+                  tabId: tab.id,
+                  selector: pwEl.selector || `@${pwEl.index}`,
+                  text: userWaitRes.value,
+                  pressEnter: true
+                });
+                await new Promise(r => setTimeout(r, 1200));
+              } catch {}
+            }
+          }
+          const retryRes = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: inPageGetSnapshot
+          });
+          return retryRes[0]?.result || snap;
+        }
+
+        return snap;
       } catch (err) {
         return { title: tab.title, url: tab.url, interactiveElementsCount: 0, interactiveElements: [], isRestricted: true };
       }
