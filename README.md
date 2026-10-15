@@ -1,280 +1,167 @@
 # ⚡ Chrome Browser Bridge
 
+> **Control your real Google Chrome browser with AI — easily, quickly, and securely.**
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D16.0.0-green.svg)](https://nodejs.org/)
 [![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest%20V3-yellow.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![MCP](https://img.shields.io/badge/Model%20Context%20Protocol-Compatible-purple.svg)](https://modelcontextprotocol.io/)
-[![Latency](https://img.shields.io/badge/Action%20Latency-%3C10ms-brightgreen.svg)]()
-[![Token Savings](https://img.shields.io/badge/Token%20Reduction-90%25-orange.svg)]()
-
-> **The ultra-fast, token-efficient autonomous bridge connecting AI Agents (Claude Desktop, Antigravity IDE, Cursor, OpenAI Agents) directly to your real, authenticated Google Chrome browser.**
 
 ---
 
-## ⚡ Why Chrome Browser Bridge?
+## 🌟 What is this?
 
-Traditional browser automation tools (Puppeteer, Playwright, Selenium) were designed for end-to-end testing, not LLM agents:
+**Chrome Browser Bridge** connects AI agents (like Claude Desktop, Antigravity, or Cursor) to the Google Chrome browser you already use every day.
 
-| Feature | Headless Automation (Playwright/Puppeteer) | ⚡ Chrome Browser Bridge |
+Normally, AI web bots start a blank browser where you are logged out of everything, get blocked by verification screens, or waste lots of time and AI tokens. 
+
+**Chrome Browser Bridge fixes that:**
+- 🔑 **Stay Logged In**: Uses your normal Chrome tabs, saved passwords, and cookies (Google, WhatsApp, GitHub, LinkedIn).
+- ⚡ **Lightning Fast**: Actions take less than 10 milliseconds.
+- 💰 **Saves AI Tokens**: Converts messy web pages into simple lists (`@1`, `@2`), saving up to 90% of token costs.
+- 🔔 **Friendly Alerts**: If a website asks for 2-step verification (2FA or CAPTCHA), the browser plays a gentle chime and lets you solve it before automatically continuing.
+- 🎯 **Visual Point & Click**: Can click buttons even on complex charts, canvas, and graphics.
+
+---
+
+## 🆚 Regular Tools vs. Chrome Browser Bridge
+
+| Feature | Regular Tools (Puppeteer/Playwright) | ⚡ Chrome Browser Bridge |
 |---|---|---|
-| **User Logins & Sessions** | ❌ Empty profiles; blocked by Google/GitHub 2FA | ✅ **100% active sessions & cookies (Google, Slack, GitHub)** |
-| **Token Consumption** | ❌ Dumps 30,000–80,000 raw DOM tokens | ✅ **Compresses DOM into `@1, @2` map (< 200 tokens)** |
-| **Execution Latency** | ❌ 1,500ms – 5,000ms browser startup & round-trips | ✅ **Sub-10ms native Chrome DevTools Protocol & Scripting** |
-| **Anti-Bot & CAPTCHA** | ❌ Headless flags trigger Cloudflare / Turnstile | ✅ **Real user browser context; zero headless fingerprint** |
-| **Human Checkpoint** | ❌ Process crashes or hangs indefinitely | ✅ **Melodic audio chime + live auto-resume banner** |
-| **Canvas & WebGL** | ❌ Cannot click or ground on Canvas/TradingView | ✅ **Visual Grounding tags `[1]`, `[2]` with coordinate clicks** |
-| **Agent Protocols** | ❌ Complex ad-hoc wrappers | ✅ **Turnkey MCP Server for Claude, Antigravity, & Cursor** |
+| **Your Logins & Passwords** | ❌ Blank profile, logged out of everything | ✅ **Keeps you logged in everywhere** |
+| **Speed** | ❌ Slow (1 to 5 seconds per action) | ✅ **Instant (under 10ms)** |
+| **Token Cost** | ❌ Sends massive page code (30,000+ tokens) | ✅ **Clean & tiny summary (< 200 tokens)** |
+| **Bot Detection / CAPTCHAs** | ❌ Blocked by websites | ✅ **Looks like a normal human user** |
+| **Verification / 2FA** | ❌ Freezes or crashes | ✅ **Plays a sound, waits for you, and resumes** |
+| **Setup with AI Assistants** | ❌ Hard to set up | ✅ **Plug-and-play with Claude, Antigravity & Cursor** |
 
 ---
 
-## 📸 Snapshots & Live Experience
+## 🚀 Quick Setup (3 Simple Steps)
 
-### 1. Terminal CLI & MCP Execution
-```text
-$ npx chrome-bridge navigate "https://news.ycombinator.com"
-✓ Opened dedicated window [Tab #1341700812] in 14ms
-
-PAGE SNAPSHOT [URL: https://news.ycombinator.com]
---------------------------------------------------------------------------------
-@1 [a] "Hacker News" (/news)
-@2 [a] "new" (/newest)
-@3 [a] "comments" (/newcomments)
-@4 [a] "Show HN: Chrome Browser Bridge" (https://github.com/...)
-@5 [span] "142 points by rahulbomnalli 2 hours ago"
-@6 [input:text] (Search)
---------------------------------------------------------------------------------
-
-$ npx chrome-bridge click @4
-✓ Clicked element @4 -> Navigated to repository (8ms)
-```
-
-### 2. Live In-Browser Agent Activity Overlay
-When your AI agent triggers actions, Chrome displays a non-intrusive floating status pill:
-
-```
-+---------------------------------------------------------------+
-|  🟣 Agent Working: Typing into search and clicking @1...     |
-+---------------------------------------------------------------+
-```
-
-The overlay updates smoothly:
-- `🟣 Agent Working` (executing)
-- `✓ Done (12ms)` (success flash)
-- `⚠️ Action Required` (human checkpoint)
-
-### 3. Human-in-the-Loop Checkpoint (2FA / CAPTCHA / App Lock)
-When encountering a Cloudflare challenge, banking 2FA, or WhatsApp App Lock:
-1. Plays a pleasant musical chime (`E5 -> B5`) inside the browser.
-2. Focuses the window with a top banner: *"Agent Paused: Please complete 2FA verification"*.
-3. Auto-resumes instantaneously the millisecond verification passes or the user clicks *"Resume"*.
-
----
-
-## 🏗️ Architecture
-
-```text
-+---------------------------------------------------------------+
-|     AI Agents (Claude Desktop / Antigravity / Cursor / CLI)   |
-+---------------------------------------------------------------+
-                               |
-                   MCP (stdio) / CLI / REST
-                               v
-+---------------------------------------------------------------+
-|       Local Bridge Server (Node.js on 127.0.0.1:8765)         |
-+---------------------------------------------------------------+
-                               ^
-                  WebSocket (ws://127.0.0.1:8765)
-                               v
-+---------------------------------------------------------------+
-|   Chrome MV3 Extension (Service Worker & Content Engine)      |
-+---------------------------------------------------------------+
-                               |
-                  Chrome DevTools Protocol (CDP)
-                               v
-+---------------------------------------------------------------+
-|     Your Real Google Chrome Browser (All Cookies & Logins)    |
-+---------------------------------------------------------------+
-```
-
----
-
-## 🚀 Quick Start (60 Seconds)
-
-### Step 1: Clone & Install
-
+### Step 1: Download the Project
+Open your computer terminal and run:
 ```bash
 git clone https://github.com/rahulbomnalli/chrome-browser-bridge.git
 cd chrome-browser-bridge
 npm install
 ```
 
-### Step 2: Load the Extension in Chrome
-
-1. Open Google Chrome and navigate to `chrome://extensions/`.
-2. Enable **Developer mode** (toggle in the top-right corner).
+### Step 2: Add the Extension to Chrome
+1. Open Google Chrome and go to `chrome://extensions/`.
+2. Turn on **Developer mode** (switch in the top-right corner).
 3. Click **Load unpacked** (top-left).
-4. Select the `extension/` folder inside the cloned repository.
-5. The extension icon appears in your toolbar with a green status indicator!
+4. Select the `extension/` folder inside this project.
+5. You will see the extension icon in your browser toolbar!
 
 ### Step 3: Start the Bridge Server
+- **On Windows**: Double-click `run.bat` or run:
+  ```cmd
+  run.bat
+  ```
+- **On Mac / Linux**: Run:
+  ```bash
+  ./run.sh
+  ```
 
-**On macOS / Linux:**
-```bash
-./run.sh
-# or: npm start
-```
-
-**On Windows:**
-```cmd
-run.bat
-# or: npm start
-```
-
-The server listens on `http://127.0.0.1:8765`.
+Your bridge is now live and waiting for AI commands!
 
 ---
 
-## 🤖 Connect to AI Agents
+## 🤖 Connect to Your Favorite AI App
 
-### 1. Claude Desktop Setup
-Add the server to your `claude_desktop_config.json`:
+Add Chrome Browser Bridge to your AI configuration file:
 
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+### Claude Desktop
+Open your Claude settings file (`claude_desktop_config.json`):
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
+Add this:
 ```json
 {
   "mcpServers": {
     "chrome-browser-bridge": {
       "command": "node",
-      "args": ["<PATH_TO_REPO>/mcp-server.js"]
+      "args": ["<FULL_PATH_TO_FOLDER>/mcp-server.js"]
     }
   }
 }
 ```
 
-### 2. Antigravity IDE Setup
-Add to your `mcp_config.json` (`~/.gemini/config/mcp_config.json` or `.agents/skills/`):
-
+### Antigravity IDE
+Add to your `mcp_config.json` file:
 ```json
 {
   "mcpServers": {
     "chrome-browser-bridge": {
       "command": "node",
-      "args": ["<PATH_TO_REPO>/mcp-server.js"]
+      "args": ["<FULL_PATH_TO_FOLDER>/mcp-server.js"]
     }
   }
 }
 ```
 
-### 3. Cursor Setup
-Go to **Settings** > **Features** > **MCP Servers** > **Add New MCP Server**:
-- **Name**: `chrome-browser-bridge`
-- **Type**: `command`
-- **Command**: `node <PATH_TO_REPO>/mcp-server.js`
+### Cursor
+1. Go to **Settings** > **Features** > **MCP Servers**.
+2. Click **Add New MCP Server**.
+3. Set **Name**: `chrome-browser-bridge`
+4. Set **Type**: `command`
+5. Set **Command**: `node <FULL_PATH_TO_FOLDER>/mcp-server.js`
 
 ---
 
-## 🛠️ CLI Reference
+## 🖥️ Easy Commands (CLI)
 
-You can run commands directly using the CLI tool:
+You can also run commands yourself directly from the command line:
 
 ```bash
-# Check bridge and extension connection status
+# Check if the bridge is connected
 node cli.js status
 
-# List all open Chrome tabs
+# List your open tabs
 node cli.js tabs
 
-# Open a URL in an isolated agent window and get semantic element tree
+# Open a website
 node cli.js navigate "https://github.com"
 
-# Click an element by compact index, CSS selector, or visible text
+# Click a button (by number, text, or selector)
 node cli.js click @1
-node cli.js click "#login-button"
 node cli.js click "Sign In"
 
-# Type text into an input field (--enter submits automatically)
-node cli.js type @2 "search query" --enter
+# Type into a search box and press Enter
+node cli.js type @2 "AI Tools" --enter
 
-# Fill an entire form in under 50ms
-node cli.js batch-fill '{"Email": "dev@test.com", "Password": "password123"}' "Submit"
+# Fill out a full form in one go
+node cli.js batch-fill '{"Email": "you@example.com", "Password": "mypassword"}' "Submit"
 
-# Visual Grounding: Injects [1], [2], [3] tags for Canvas / WebGL / TradingView
-node cli.js ground
-
-# Extract distraction-free readability content
+# Read article text without clutter
 node cli.js read
 
-# Execute JavaScript directly in the active tab context
-node cli.js eval "window.location.href"
-
-# Take high-resolution screenshot
-node cli.js screenshot "output.png"
-
-# Execute a multi-step macro pipeline in 1 single round-trip
-node cli.js pipeline '[
-  {"action":"type","params":{"target":"#search","text":"ai bridge"}},
-  {"action":"press","params":{"key":"Enter"}},
-  {"action":"wait","ms":300},
-  {"action":"click","params":{"target":"@1"}}
-]'
-
-# Run parallel scraping across multiple URLs in < 2 seconds
-node cli.js scrape "https://news.ycombinator.com" "https://github.com/trending"
+# Take a screenshot
+node cli.js screenshot "page.png"
 ```
 
 ---
 
-## 🧰 Full MCP Toolset (24+ Native Agent Tools)
+## 🧰 Available Tools for AI
 
-| Tool Name | Parameters | Description |
-|---|---|---|
-| `chrome_smart_navigate` | `url`, `newWindow`, `timeout` | Opens dedicated window with shared cookies; returns compact elements `@1, @2` in 1 call |
-| `chrome_snap` | `tabId`, `interactiveOnly` | Ultra-compact semantic DOM tree (**90% fewer tokens**) |
-| `chrome_click` | `target`, `waitForNavigation` | Click element by `@index`, selector, or text; returns updated page state |
-| `chrome_type` | `target`, `text`, `pressEnter` | Types into inputs/contentEditables; auto-submits with `pressEnter: true` |
-| `chrome_batch_fill` | `fields`, `submitSelector` | Fills multiple inputs simultaneously across React/Vue/vanilla forms in < 50ms |
-| `chrome_visual_grounding` | `tabId` | Generates numbered visual tags (`[1]`, `[2]`) for Canvas, SVGs, and WebGL |
-| `chrome_pipeline` | `steps` | Runs multi-action pipelines in 1 round-trip without intermediate LLM delays |
-| `chrome_detect_challenge` | `tabId` | Detects Cloudflare, Turnstile, hCaptcha, Google reCAPTCHA, and 2FA screens |
-| `chrome_wait_for_user` | `reason`, `timeoutSec` | Melodic chime + top banner for human checkpoint; auto-resumes once resolved |
-| `chrome_parallel_scrape` | `urls`, `selector` | Fetches and parses content across multiple URLs in parallel worker tabs |
-| `chrome_read_page` | `tabId` | Clean readability extraction (headings, article text, metadata) |
-| `chrome_save_macro` | `name`, `steps` | Saves repetitive workflows for zero-token replaying |
-| `chrome_run_macro` | `name`, `variables` | Replays saved workflow at hardware speed with **zero LLM tokens** |
-| `chrome_list_tabs` | - | Lists open tabs with IDs, titles, and URLs |
-| `chrome_switch_tab` | `tabId` | Switches active Chrome tab |
-| `chrome_screenshot` | `path`, `fullPage` | Captures high-res PNG screenshot |
-| `chrome_network_logs` | `filter`, `limit` | Live HTTP/HTTPS requests, status codes, and latency |
-| `chrome_console_logs` | `level`, `limit` | Captures browser console logs and uncaught runtime errors |
-| `chrome_evaluate` | `script` | Executes arbitrary JavaScript inside page context |
-
----
-
-## 🔒 Privacy, Security & Isolation
-
-- **100% Local**: All communication occurs exclusively over loopback `127.0.0.1`. No external servers, no telemetry, no third-party cloud relays.
-- **Dedicated Task Window**: The bridge operates in an isolated window under your profile. Your personal tabs and windows remain undisturbed.
-- **Zero Headless Footprint**: Because it runs inside your real Google Chrome, anti-bot mechanisms see authentic browser TLS fingerprints, WebGL contexts, and natural user environments.
-
----
-
-## 🤝 Contributing
-
-Contributions, feature requests, and benchmarks are welcome!
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/FastAction`)
-3. Commit your Changes (`git commit -m 'Add fast action pipeline'`)
-4. Push to the Branch (`git push origin feature/FastAction`)
-5. Open a Pull Request
+| Tool | What It Does |
+|---|---|
+| `chrome_smart_navigate` | Opens a web page using your existing cookies and returns simple numbered buttons (`@1`, `@2`) |
+| `chrome_snap` | Takes a clean, low-token snapshot of interactive items on the page |
+| `chrome_click` | Clicks any button, link, or item |
+| `chrome_type` | Types words or searches into fields |
+| `chrome_batch_fill` | Fills out an entire login or sign-up form instantly |
+| `chrome_read_page` | Extracts clean text and articles without ads or sidebar mess |
+| `chrome_screenshot` | Saves a high-quality picture of the page |
+| `chrome_wait_for_user` | Chimes and waits for you if 2FA or CAPTCHA appears, then resumes |
+| `chrome_list_tabs` | Shows all currently open tabs |
+| `chrome_switch_tab` | Jumps to another open tab |
+| `chrome_parallel_scrape` | Reads multiple websites at the same time |
 
 ---
 
 ## 📄 License
 
-Distributed under the MIT License. See [`LICENSE`](LICENSE) for more details.
-
----
-
-**Built with ⚡ for the next generation of autonomous AI agents.**
+This project is licensed under the [MIT License](LICENSE).
