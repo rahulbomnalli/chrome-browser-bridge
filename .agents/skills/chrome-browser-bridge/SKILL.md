@@ -192,6 +192,7 @@ Examples:
 - Stale target → reacquire it from fresh state.
 - Ambiguous target → distinguish candidates using accessible names or context.
 - Obscured target → identify the actual blocker and handle it if doing so serves the user's task.
+- Unknown/unfound element or altered layout → search the internet for the application's current layout, settings path, or UI updates (e.g. WhatsApp Web layout changes, SPA navigation paths) to form a clear target model before attempting further interaction.
 - Dynamic page → wait for a relevant readiness condition rather than a fixed arbitrary delay.
 - Failed navigation → inspect the actual URL, loading state, and error.
 - Extension disconnection → reconnect through supported mechanisms without restarting everything unnecessarily.

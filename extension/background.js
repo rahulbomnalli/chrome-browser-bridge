@@ -2552,12 +2552,14 @@ function inPageEval(code) {
 }
 
 function inPageGetSnapshot() {
-  const snap = inPageGetCompactSnapshot();
+  const snap = typeof inPageGetCompactSnapshot === 'function' ? inPageGetCompactSnapshot() : { title: document.title, url: location.href, items: [] };
+  const bodyText = (document.body ? document.body.innerText : "").slice(0, 800);
   return {
-    title: snap.title,
-    url: snap.url,
-    interactiveElementsCount: snap.items.length,
-    interactiveElements: snap.items.map(item => ({
+    title: snap.title || document.title,
+    url: snap.url || location.href,
+    bodySummary: bodyText,
+    interactiveElementsCount: (snap.items || []).length,
+    interactiveElements: (snap.items || []).map(item => ({
       index: item.i,
       tag: item.t,
       type: item.y,
