@@ -972,11 +972,13 @@ async function handleActionInner(action, params) {
           out += line + '\n';
         });
 
-        const consoleBuf = getConsoleBuffer(tab.id);
-        const errorCount = consoleBuf.filter(c => c.level === 'error').length;
-        if (errorCount > 0) out += `[⚠️ ${errorCount} errors]\n`;
+        // Universal Checkpoint Detection: If page presents a screen lock or password input, flag it
+        const hasPasswordInput = snap.items.some(i => i.y === 'password' || (i.n && /password|enter pin|unlock code/i.test(i.n)));
+        if (hasPasswordInput) {
+          out = `[🔒 Action Required: Password/Unlock Screen Detected]\n` + out;
+        }
 
-        return { tabId: tab.id, compact: out, count: snap.items.length };
+        return { tabId: tab.id, compact: out, count: snap.items.length, hasPasswordInput };
       } catch (err) {
         return { tabId: tab.id, compact: `[URL: ${tab.url}] [Restricted Page: ${err.message}]`, count: 0 };
       }
@@ -1025,11 +1027,27 @@ async function handleActionInner(action, params) {
     // INSTANT ELEMENT CLICK + Highlight + Auto-Snap
     case "click": {
       const tab = await getTargetTab(params.tabId);
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: inPageClick,
-        args: [params]
-      });
+      let results;
+      try {
+        results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: inPageClick,
+          args: [params]
+        });
+      } catch (err) {
+        // Automatic Obstruction/Overlay Recovery: Dismiss popups, consent banners, dialogs and retry
+        try {
+          await handleActionInner("dismiss_overlays", { tabId: tab.id });
+          await new Promise(r => setTimeout(r, 200));
+          results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: inPageClick,
+            args: [params]
+          });
+        } catch {
+          throw err;
+        }
+      }
       const clickResult = results[0]?.result || {};
       if (clickResult.selector) highlightElement(tab.id, clickResult.selector);
 
@@ -1083,11 +1101,27 @@ async function handleActionInner(action, params) {
     // INSTANT INPUT TYPING + Highlight + Auto-Snap on Submit
     case "type": {
       const tab = await getTargetTab(params.tabId);
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: inPageType,
-        args: [params]
-      });
+      let results;
+      try {
+        results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: inPageType,
+          args: [params]
+        });
+      } catch (err) {
+        // Automatic Obstruction/Overlay Recovery: Dismiss popups, consent banners, dialogs and retry
+        try {
+          await handleActionInner("dismiss_overlays", { tabId: tab.id });
+          await new Promise(r => setTimeout(r, 200));
+          results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: inPageType,
+            args: [params]
+          });
+        } catch {
+          throw err;
+        }
+      }
       const typeResult = results[0]?.result || {};
       if (typeResult.selector) highlightElement(tab.id, typeResult.selector);
 
@@ -1809,7 +1843,24 @@ async function handleActionInner(action, params) {
         }]
       });
 
-      const outcome = res[0]?.result || { success: false, error: "Execution returned no result" };
+      let outcome = res[0]?.result || { success: false, error: "Execution returned no result" };
+
+      // Automatic In-Tab Lock Recovery: If locked, immediately prompt user in-tab with chime and auto-resume
+      if (outcome.isLocked) {
+        await handleActionInner("wait_for_user", {
+          tabId: tab.id,
+          reason: "Please enter your WhatsApp Web password to unlock",
+          timeoutSec: 120
+        });
+        // Retry sending message after user unlock
+        const retryRes = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: inPageWhatsAppSendMessage,
+          args: [{ contact, message, dryRun: !!dryRun }]
+        });
+        outcome = retryRes[0]?.result || outcome;
+      }
+
       return { tabId: tab.id, ...outcome };
     }
 
