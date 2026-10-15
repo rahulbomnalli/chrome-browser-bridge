@@ -471,23 +471,8 @@ async function getTargetTab(tabId) {
       return specifiedTab;
     }
   }
-  if (activeDesignatedTabId) {
-    try {
-      const designatedTab = await chrome.tabs.get(activeDesignatedTabId);
-      if (designatedTab) return designatedTab;
-    } catch {
-      activeDesignatedTabId = null;
-    }
-  }
-  if (activeSandboxTabId) {
-    try {
-      const sandboxTab = await chrome.tabs.get(activeSandboxTabId);
-      if (sandboxTab) return sandboxTab;
-    } catch {
-      activeSandboxTabId = null;
-      activeSandboxWindowId = null;
-    }
-  }
+
+  // 1. Prioritize activeAgentTabId (dedicated bridge window)
   if (activeAgentTabId) {
     try {
       const agentTab = await chrome.tabs.get(activeAgentTabId);
@@ -497,6 +482,41 @@ async function getTargetTab(tabId) {
       activeAgentWindowId = null;
     }
   }
+
+  // 2. Fall back to any active tab in the dedicated bridge window
+  if (activeAgentWindowId) {
+    try {
+      const agentWinTabs = await chrome.tabs.query({ windowId: activeAgentWindowId });
+      if (agentWinTabs && agentWinTabs.length > 0) {
+        const activeWinTab = agentWinTabs.find(t => t.active) || agentWinTabs[0];
+        activeAgentTabId = activeWinTab.id;
+        activeDesignatedTabId = activeWinTab.id;
+        return activeWinTab;
+      }
+    } catch {
+      activeAgentWindowId = null;
+    }
+  }
+
+  if (activeSandboxTabId) {
+    try {
+      const sandboxTab = await chrome.tabs.get(activeSandboxTabId);
+      if (sandboxTab) return sandboxTab;
+    } catch {
+      activeSandboxTabId = null;
+      activeSandboxWindowId = null;
+    }
+  }
+
+  if (activeDesignatedTabId) {
+    try {
+      const designatedTab = await chrome.tabs.get(activeDesignatedTabId);
+      if (designatedTab) return designatedTab;
+    } catch {
+      activeDesignatedTabId = null;
+    }
+  }
+
   const isUnrestricted = (t) => t && t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("edge://") && !t.url.startsWith("about:");
 
   const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -863,7 +883,17 @@ async function handleActionInner(action, params) {
     }
 
     case "new_tab": {
-      const newTab = await chrome.tabs.create({ url: params.url || "about:blank", active: params.active !== false });
+      const agentWin = await getOrCreateAgentWindow(params.url || "about:blank");
+      let newTab;
+      if (agentWin.existing) {
+        newTab = await chrome.tabs.create({
+          windowId: agentWin.windowId,
+          url: params.url || "about:blank",
+          active: params.active !== false
+        });
+      } else {
+        newTab = agentWin.tabs[0];
+      }
       activeAgentTabId = newTab.id;
       activeDesignatedTabId = newTab.id;
       if (params.url && params.url !== "about:blank" && params.waitForLoad !== false) {
@@ -942,20 +972,25 @@ async function handleActionInner(action, params) {
           if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
         }
       } else {
-        // 2. Default & Dedicated Window Mode: Always launch in a dedicated new Chrome window
-        const newWin = await chrome.windows.create({
-          url: params.url,
-          type: "normal",
-          width: params.width || 1280,
-          height: params.height || 900,
-          focused: params.focused !== false
-        });
-        activeAgentWindowId = newWin.id;
-        const winTabs = await chrome.tabs.query({ windowId: newWin.id });
-        tab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
-        if (!tab) throw new Error("Failed to find tab in newly created agent window");
+        // 2. Default & Dedicated Window Mode: Always execute in the dedicated agent window
+        const agentWin = await getOrCreateAgentWindow(params.url);
+        if (agentWin.existing) {
+          // If dedicated window already exists, navigate its active tab or create tab in it
+          const winTabs = await chrome.tabs.query({ windowId: agentWin.windowId, active: true });
+          tab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
+          if (tab) {
+            if (tab.url !== params.url) {
+              await chrome.tabs.update(tab.id, { url: params.url, active: true });
+            }
+          } else {
+            tab = await chrome.tabs.create({ windowId: agentWin.windowId, url: params.url, active: true });
+          }
+        } else {
+          tab = agentWin.tabs[0];
+          openedNewWindow = true;
+        }
+        if (!tab) throw new Error("Failed to find tab in agent window");
         activeAgentTabId = tab.id;
-        openedNewWindow = true;
       }
 
       if (!isReusedTab && params.waitForLoad !== false) {
@@ -1020,13 +1055,46 @@ async function handleActionInner(action, params) {
           out += line + '\n';
         });
 
-        // Universal Checkpoint Detection: If page presents a screen lock or password input, flag it
-        const hasPasswordInput = snap.items.some(i => i.y === 'password' || (i.n && /password|enter pin|unlock code/i.test(i.n)));
-        if (hasPasswordInput) {
-          out = `[🔒 Action Required: Password/Unlock Screen Detected]\n` + out;
+        // Universal Autonomous In-Tab Checkpoint: Never halt agent or return lock to LLM
+        const pwItem = snap.items.find(i => i.y === 'password' || (i.n && /password|enter pin|unlock code/i.test(i.n)));
+        if (pwItem) {
+          const userWaitRes = await handleActionInner("wait_for_user", {
+            tabId: tab.id,
+            reason: "Screen Lock / Password Required: Enter password or unlock to continue",
+            timeoutSec: 120
+          });
+          // If user provided password in prompt, automatically enter it and submit
+          if (userWaitRes.value) {
+            try {
+              await handleActionInner("type", {
+                tabId: tab.id,
+                target: `@${pwItem.i}`,
+                text: userWaitRes.value,
+                pressEnter: true
+              });
+              await new Promise(r => setTimeout(r, 1200));
+            } catch {}
+          }
+          // Refresh snapshot after unlock
+          const refreshedRes = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: inPageGetCompactSnapshot
+          });
+          const freshSnap = refreshedRes[0]?.result || snap;
+          let freshOut = `[${freshSnap.title}] ${freshSnap.url}\n`;
+          (freshSnap.items || []).forEach(el => {
+            let line = `@${el.i}[${el.t}`;
+            if (el.y) line += `:${el.y}`;
+            if (el.s) line += `${el.s}`;
+            line += `]`;
+            if (el.n) line += ` "${el.n}"`;
+            if (el.v) line += ` val="${el.v}"`;
+            freshOut += line + '\n';
+          });
+          return { tabId: tab.id, compact: freshOut, count: (freshSnap.items || []).length, unlocked: true };
         }
 
-        return { tabId: tab.id, compact: out, count: snap.items.length, hasPasswordInput };
+        return { tabId: tab.id, compact: out, count: snap.items.length };
       } catch (err) {
         return { tabId: tab.id, compact: `[URL: ${tab.url}] [Restricted Page: ${err.message}]`, count: 0 };
       }
@@ -1869,16 +1937,28 @@ async function handleActionInner(action, params) {
       if (tabId) {
         tab = await chrome.tabs.get(Number(tabId));
       } else {
-        const tabs = await chrome.tabs.query({});
-        tab = tabs.find(t => t.url && t.url.includes("web.whatsapp.com"));
+        // Look for WhatsApp Web inside the dedicated agent window first, then overall
+        if (activeAgentWindowId) {
+          const agentTabs = await chrome.tabs.query({ windowId: activeAgentWindowId });
+          tab = agentTabs.find(t => t.url && t.url.includes("web.whatsapp.com"));
+        }
+        if (!tab) {
+          const tabs = await chrome.tabs.query({});
+          tab = tabs.find(t => t.url && t.url.includes("web.whatsapp.com"));
+        }
       }
 
       if (!tab) {
-        tab = await chrome.tabs.create({ url: "https://web.whatsapp.com/", active: true });
+        const agentWin = await getOrCreateAgentWindow("https://web.whatsapp.com/");
+        if (agentWin.existing) {
+          tab = await chrome.tabs.create({ windowId: agentWin.windowId, url: "https://web.whatsapp.com/", active: true });
+        } else {
+          tab = agentWin.tabs[0];
+        }
+        activeAgentTabId = tab.id;
         await waitForPageLoad(tab.id, 8000);
       } else {
         await chrome.tabs.update(tab.id, { active: true });
-        if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
       }
 
       const res = await chrome.scripting.executeScript({
