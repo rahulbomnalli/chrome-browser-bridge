@@ -493,6 +493,31 @@ const TOOLS = [
         tabId: { type: "number", description: "Optional tab ID" }
       }
     }
+  },
+  {
+    name: "chrome_wait_for_element",
+    description: "Pause until a specific element or text appears in the DOM (with dynamic polling, no fixed sleep timers). Returns immediately upon appearance.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of element to wait for" },
+        text: { type: "string", description: "Visible text snippet to wait for" },
+        timeoutMs: { type: "number", description: "Maximum wait time in milliseconds (default 10000)" },
+        tabId: { type: "number", description: "Optional tab ID" }
+      }
+    }
+  },
+  {
+    name: "chrome_download_file",
+    description: "Trigger a file download directly in Chrome from a URL, blob, or base64 data URI to disk.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Download URL or base64 data URI" },
+        filename: { type: "string", description: "Optional suggested destination filename" }
+      },
+      required: ["url"]
+    }
   }
 ];
 
@@ -762,6 +787,22 @@ async function handleToolCall(name, args) {
     case "chrome_dismiss_overlays": {
       const res = await postAction("dismiss_overlays", {
         tabId: args.tabId
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_wait_for_element": {
+      const res = await postAction("wait_for_element", {
+        selector: args.selector,
+        text: args.text,
+        timeoutMs: args.timeoutMs,
+        tabId: args.tabId
+      });
+      return JSON.stringify(res);
+    }
+    case "chrome_download_file": {
+      const res = await postAction("download_file", {
+        url: args.url,
+        filename: args.filename
       });
       return JSON.stringify(res);
     }

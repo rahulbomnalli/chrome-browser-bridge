@@ -45,17 +45,65 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   networkBuffers.delete(tabId);
   consoleBuffers.delete(tabId);
-  elementCache.delete(tabId);
   networkIndexes.delete(tabId);
   _enabledDomains.delete(tabId);
 });
 
-// Update designated tab when user or agent switches active tab
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  // If active tab changed and we are not in sandbox mode, track currently active tab
-  if (!activeSandboxTabId) {
-    activeDesignatedTabId = activeInfo.tabId;
+// Ensure bridge tasks run in a dedicated agent window without disturbing user window
+async function getOrCreateAgentWindow(url = "about:blank") {
+  if (activeAgentWindowId) {
+    try {
+      const win = await chrome.windows.get(activeAgentWindowId, { populate: true });
+      if (win) {
+        return { windowId: win.id, existing: true, tabs: win.tabs || [] };
+      }
+    } catch {
+      activeAgentWindowId = null;
+      activeAgentTabId = null;
+    }
   }
+
+  // Get user's current window so we never disturb their focus if desired
+  let userFocusedWindowId = null;
+  try {
+    const lastFocused = await chrome.windows.getLastFocused();
+    userFocusedWindowId = lastFocused?.id;
+  } catch {}
+
+  const newWin = await chrome.windows.create({
+    url,
+    type: "normal",
+    width: 1280,
+    height: 900,
+    focused: true
+  });
+  activeAgentWindowId = newWin.id;
+  const winTabs = await chrome.tabs.query({ windowId: newWin.id });
+  const firstTab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
+  if (firstTab) {
+    activeAgentTabId = firstTab.id;
+    activeDesignatedTabId = firstTab.id;
+  }
+  return { windowId: newWin.id, existing: false, tabs: winTabs || [] };
+}
+
+// Update designated tab when user or agent switches active tab
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  if (activeSandboxTabId) return;
+
+  // If bridge has a designated agent window, only track tabs inside the agent window
+  if (activeAgentWindowId) {
+    try {
+      const tab = await chrome.tabs.get(activeInfo.tabId);
+      if (tab.windowId === activeAgentWindowId) {
+        activeAgentTabId = tab.id;
+        activeDesignatedTabId = tab.id;
+      }
+      return;
+    } catch {}
+  }
+
+  activeDesignatedTabId = activeInfo.tabId;
 });
 
 async function waitForPageLoad(tabId, maxTimeout = 2000) {
@@ -1874,6 +1922,52 @@ async function handleActionInner(action, params) {
       return res[0]?.result || { count: 0, data: [] };
     }
 
+    // UNIVERSAL DYNAMIC ELEMENT WAITER: Wait until an element matching a selector or text appears
+    case "wait_for_element": {
+      const tab = await getTargetTab(params.tabId);
+      const timeoutMs = Number(params.timeoutMs) || 10000;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: async (selector, text, timeout) => {
+          const start = performance.now();
+          const targetStr = selector || text;
+          while (performance.now() - start < timeout) {
+            let el = null;
+            if (selector) {
+              try { el = document.querySelector(selector); } catch {}
+            }
+            if (!el && text) {
+              const query = String(text).toLowerCase();
+              const all = Array.from(document.querySelectorAll('*'));
+              el = all.find(e => (e.innerText || e.textContent || '').trim().toLowerCase().includes(query));
+            }
+            if (el) {
+              const s = window.getComputedStyle(el);
+              if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
+                return { found: true, elapsedMs: Math.round(performance.now() - start), tag: el.tagName, id: el.id };
+              }
+            }
+            await new Promise(r => setTimeout(r, 100));
+          }
+          return { found: false, timeout: true };
+        },
+        args: [params.selector, params.text, timeoutMs]
+      });
+      return results[0]?.result || { found: false };
+    }
+
+    // UNIVERSAL FILE DOWNLOAD TRIGGER (Base64, blob, or remote URL)
+    case "download_file": {
+      const { url, filename, conflictAction = "uniquify" } = params;
+      if (!url) throw new Error("Missing 'url' parameter for download_file");
+      const downloadId = await chrome.downloads.download({
+        url,
+        filename: filename || undefined,
+        conflictAction
+      });
+      return { success: true, downloadId, url, filename };
+    }
+
     case "reload_extension": {
       setTimeout(() => chrome.runtime.reload(), 150);
       return { success: true, reloaded: true };
@@ -1980,6 +2074,31 @@ function inPageClick(params) {
     } catch {}
   }
 
+  // Helper: Deep search across open shadow DOMs and accessible iframes
+  function deepFind(root, predicate) {
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) continue;
+      if (current !== root && predicate(current)) return current;
+      if (current.shadowRoot) stack.push(current.shadowRoot);
+      if (current.contentDocument) stack.push(current.contentDocument.body || current.contentDocument);
+      if (current.children) {
+        for (let i = current.children.length - 1; i >= 0; i--) {
+          stack.push(current.children[i]);
+        }
+      }
+    }
+    return null;
+  }
+
+  if (!el && (target || selector)) {
+    const rawSel = String(selector || target).trim();
+    el = deepFind(document.body, node => {
+      try { return node.matches && node.matches(rawSel); } catch { return false; }
+    });
+  }
+
   // 3. Text content / label matching
   if (!el && (text || target)) {
     const query = String(text || target).toLowerCase().trim().replace(/^["']|["']$/g, '');
@@ -2069,6 +2188,29 @@ function inPageType(params) {
     try {
       el = document.querySelector(`input[name="${CSS.escape(cleanVal)}"], textarea[name="${CSS.escape(cleanVal)}"], [placeholder*="${CSS.escape(cleanVal)}" i], [aria-label*="${CSS.escape(cleanVal)}" i], [data-testid="${CSS.escape(cleanVal)}"]`);
     } catch {}
+  }
+
+  // Deep search across shadow DOMs and accessible iframes
+  if (!el && (target || selector)) {
+    const rawSel = String(selector || target).trim();
+    const stack = [document.body];
+    while (stack.length > 0) {
+      const curr = stack.pop();
+      if (!curr) continue;
+      if (curr.matches && (curr.matches('input, textarea, [contenteditable="true"]') || curr.isContentEditable)) {
+        try {
+          if (curr.matches(rawSel) || curr.getAttribute('name') === rawSel || curr.getAttribute('placeholder') === rawSel || curr.id === rawSel) {
+            el = curr;
+            break;
+          }
+        } catch {}
+      }
+      if (curr.shadowRoot) stack.push(curr.shadowRoot);
+      if (curr.contentDocument) stack.push(curr.contentDocument.body || curr.contentDocument);
+      if (curr.children) {
+        for (let i = curr.children.length - 1; i >= 0; i--) stack.push(curr.children[i]);
+      }
+    }
   }
 
   if (!el) el = document.activeElement;
