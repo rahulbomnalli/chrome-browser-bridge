@@ -115,6 +115,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // /memory GET (Recall all or by key)
+  if (path?.startsWith("/memory") && req.method === "GET") {
+    try {
+      const urlObj = new URL(req.url, `http://127.0.0.1:${PORT}`);
+      const key = urlObj.searchParams.get("key");
+      const memRes = await executeAction("get_memory", key ? { key } : {});
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, memory: memRes }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+    return;
+  }
+
   // Serve Web GUI Dashboard
   if (path === "/" || path === "/dashboard") {
     const fs = require("fs");
