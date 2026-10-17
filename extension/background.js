@@ -1,3 +1,4 @@
+importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js");
 // Antigravity Chrome Agent Bridge - Ultra-Fast v4.0 Engine
 const BRIDGE_WS_URL = "ws://127.0.0.1:8765";
 
@@ -107,34 +108,27 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 });
 
 async function waitForPageLoad(tabId, maxTimeout = 2000) {
-  try {
-    const tab = await chrome.tabs.get(tabId).catch(() => null);
-    if (tab && tab.status === "complete") {
-      return;
-    }
-  } catch {}
-
   return new Promise((resolve) => {
     let done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }
     const timeout = setTimeout(() => {
-      if (!done) {
-        done = true;
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
+      finish();
     }, maxTimeout);
-
     function listener(updatedId, info) {
-      if (updatedId === tabId && info.status === "complete") {
-        if (!done) {
-          done = true;
-          clearTimeout(timeout);
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      }
+      if (updatedId === tabId && info.status === "complete") finish();
     }
     chrome.tabs.onUpdated.addListener(listener);
+    // Subscribe first: completion between the status check and subscription
+    // otherwise costs the full timeout even though the page is ready.
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === "complete") finish();
+    }).catch(() => {});
   });
 }
 
@@ -338,6 +332,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         type: "request",
         url: params.request.url,
         method: params.request.method,
+        resourceType: params.type || null,
         headers: params.request.headers,
         postData: params.request.postData || null,
         status: "pending"
@@ -822,7 +817,7 @@ async function handleAction(action, params) {
   };
 
   let overlayTabId = null;
-  if (overlayActions[action]) {
+  if (params.showHud === true && overlayActions[action]) {
     try {
       const tab = await getTargetTab(params.tabId);
       overlayTabId = tab.id;
@@ -852,6 +847,44 @@ async function handleAction(action, params) {
 
 async function handleActionInner(action, params) {
   switch (action) {
+    case "workflow": {
+      let plan = params;
+      if (params.name) {
+        if (params.stages || params.verify) throw new Error('Use a saved name or a new plan, not both');
+        const saved = (await chrome.storage.local.get('agent_workflows')).agent_workflows || {};
+        if (!Object.prototype.hasOwnProperty.call(saved, params.name)) throw new Error('Saved workflow not found');
+        plan = { ...saved[params.name], inputs: params.inputs, tabId: params.tabId, timeoutMs: params.timeoutMs };
+      }
+      const result = await executeWorkflow(plan, { getTargetTab, execute: handleActionInner });
+      if (result.ok && params.saveAs) {
+        try {
+          const saved = (await chrome.storage.local.get('agent_workflows')).agent_workflows || {};
+          Object.defineProperty(saved, params.saveAs, { value: { stages: plan.stages, verify: plan.verify }, enumerable: true, configurable: true, writable: true });
+          await chrome.storage.local.set({ agent_workflows: saved });
+          result.savedAs = params.saveAs;
+        } catch (error) { result.saveError = error.message; }
+      }
+      return result;
+    }
+    case "workflow_condition": {
+      const tab = await getTargetTab(params.tabId);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, func: checkWorkflowCondition, injectImmediately: true, args: [params]
+      });
+      if (!results[0]?.result) throw new Error('Condition observation interrupted');
+      return results[0].result;
+    }
+    case "act": {
+      const tab = await getTargetTab(params.tabId);
+      const execution = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, func: runDomWorkflow, injectImmediately: true,
+        args: [{ steps: params.steps, timeoutMs: params.timeoutMs ?? 10000 }]
+      });
+      const result = execution[0]?.result;
+      if (!result) throw new Error('Page execution interrupted; inspect page before retrying');
+      return { tabId: tab.id, ...result };
+    }
+
     case "ping":
       return { pong: true, time: Date.now(), attachedTabs: Array.from(attachedTabs) };
 
@@ -1032,6 +1065,7 @@ async function handleActionInner(action, params) {
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          injectImmediately: true,
           func: inPageGetCompactSnapshot
         });
         const snap = results[0]?.result || {};
@@ -1100,44 +1134,9 @@ async function handleActionInner(action, params) {
       }
     }
 
-    // MULTI-ACTION PIPELINE (Executes multiple steps in 1 single fast round trip with live HUD)
+    // MULTI-ACTION PIPELINE (Executes multiple steps in one round trip)
     case "pipeline": {
-      const steps = params.steps || [];
-      const tab = await getTargetTab(params.tabId);
-      const results = [];
-      const startTime = Date.now();
-
-      for (let i = 0; i < steps.length; i++) {
-        const step = steps[i];
-        step.params = step.params || {};
-        step.params.tabId = tab.id;
-        step.params.returnSnap = false;
-
-        const stepName = step.action === 'click' ? `Clicking ${step.params.target || step.params.text || 'element'}`
-          : step.action === 'type' ? `Typing "${String(step.params.text || '').slice(0, 16)}"`
-          : step.action === 'wait' ? `Waiting ${step.ms || 50}ms`
-          : step.action;
-
-        showAgentOverlay(tab.id, stepName, startTime, true, i + 1, steps.length);
-
-        if (step.action === "wait") {
-          await new Promise(r => setTimeout(r, step.ms || 50));
-          results.push({ action: "wait", ok: true });
-        } else {
-          const res = await handleActionInner(step.action, step.params);
-          results.push({ action: step.action, ok: true, result: res });
-        }
-      }
-
-      let snapCompact = null;
-      if (params.returnSnap !== false) {
-        try {
-          const snapRes = await handleActionInner("snap", { tabId: tab.id });
-          snapCompact = snapRes.compact;
-        } catch {}
-      }
-
-      return { ok: true, count: steps.length, results, snapshot: snapCompact };
+      return executePipeline(params, { getTargetTab, execute: handleActionInner });
     }
 
     // INSTANT ELEMENT CLICK + Highlight + Auto-Snap
@@ -1147,6 +1146,7 @@ async function handleActionInner(action, params) {
       try {
         results = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          injectImmediately: true,
           func: inPageClick,
           args: [params]
         });
@@ -1157,6 +1157,7 @@ async function handleActionInner(action, params) {
           await new Promise(r => setTimeout(r, 200));
           results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
+            injectImmediately: true,
             func: inPageClick,
             args: [params]
           });
@@ -1165,7 +1166,7 @@ async function handleActionInner(action, params) {
         }
       }
       const clickResult = results[0]?.result || {};
-      if (clickResult.selector) highlightElement(tab.id, clickResult.selector);
+      if (params.highlight === true && clickResult.selector) highlightElement(tab.id, clickResult.selector);
 
       if (params.returnSnap !== false) {
         try {
@@ -1221,6 +1222,7 @@ async function handleActionInner(action, params) {
       try {
         results = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
+          injectImmediately: true,
           func: inPageType,
           args: [params]
         });
@@ -1231,6 +1233,7 @@ async function handleActionInner(action, params) {
           await new Promise(r => setTimeout(r, 200));
           results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
+            injectImmediately: true,
             func: inPageType,
             args: [params]
           });
@@ -1239,7 +1242,7 @@ async function handleActionInner(action, params) {
         }
       }
       const typeResult = results[0]?.result || {};
-      if (typeResult.selector) highlightElement(tab.id, typeResult.selector);
+      if (params.highlight === true && typeResult.selector) highlightElement(tab.id, typeResult.selector);
 
       if (params.pressEnter && params.returnSnap !== false) {
         try {
@@ -1395,11 +1398,55 @@ async function handleActionInner(action, params) {
       return { tabId: tab.id, totalLogs: buf.length, logs: sliced };
     }
 
+    case "debug_bundle": {
+      const tab = await getTargetTab(params.tabId);
+      if (!await ensureDebuggerAttached(tab.id)) throw new Error("Could not attach Chrome DevTools debugger");
+      return {
+        tabId: tab.id,
+        ...buildDebugBundle({
+          networkEntries: getNetworkBuffer(tab.id).toArray(),
+          consoleEntries: getConsoleBuffer(tab.id).toArray(),
+          filter: params.filter,
+          level: params.level,
+          limit: params.limit ?? 20
+        })
+      };
+    }
+
+    case "api_catalog": {
+      const tab = await getTargetTab(params.tabId);
+      if (!await ensureDebuggerAttached(tab.id)) throw new Error("Could not attach Chrome DevTools debugger");
+      const buffer = getNetworkBuffer(tab.id);
+      const pageResources = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageObservedResources,
+        injectImmediately: true
+      });
+      if (!pageResources[0]?.result) throw new Error("Could not read page resource timings");
+      return {
+        tabId: tab.id,
+        ...buildObservedApiCatalog({
+          entries: [...pageResources[0].result, ...buffer.toArray()],
+          filter: params.filter,
+          limit: params.limit ?? 30
+        })
+      };
+    }
+
     // DEVTOOLS: RAW CDP
     case "cdp": {
       const tab = await getTargetTab(params.tabId);
       await ensureDebuggerAttached(tab.id);
       return await chrome.debugger.sendCommand({ tabId: tab.id }, params.method, params.params || {});
+    }
+
+    case "cdp_batch": {
+      const tab = await getTargetTab(params.tabId);
+      if (!await ensureDebuggerAttached(tab.id)) throw new Error("Could not attach Chrome DevTools debugger");
+      return executeCdpBatch(params, {
+        sendCommand: (method, commandParams) =>
+          chrome.debugger.sendCommand({ tabId: tab.id }, method, commandParams)
+      });
     }
 
     // STORAGE & COOKIES
@@ -1492,6 +1539,77 @@ async function handleActionInner(action, params) {
         args: [params]
       });
       return results[0]?.result || { ok: false, error: "Execution failed" };
+    }
+
+    case "page_fetch_many": {
+      const requests = params.requests;
+      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 20) {
+        throw new Error("page_fetch_many requires 1 to 20 requests");
+      }
+      const timeoutMs = params.timeoutMs ?? 20000;
+      const maxResponseChars = params.maxResponseChars ?? 10000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
+        throw new Error("Invalid page fetch timeout");
+      }
+      if (!Number.isInteger(maxResponseChars) || maxResponseChars < 256 || maxResponseChars > 50000) {
+        throw new Error("maxResponseChars must be an integer between 256 and 50000");
+      }
+      const tab = await getTargetTab(params.tabId);
+      const execution = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageFetchMany,
+        args: [{ requests, timeoutMs, maxResponseChars }],
+        injectImmediately: true
+      });
+      if (!execution[0]?.result) throw new Error("Page fetch execution was interrupted");
+      return execution[0].result;
+    }
+
+    case "page_fetch_sequence": {
+      const requests = params.requests;
+      if (!Array.isArray(requests) || requests.length < 1 || requests.length > 20) {
+        throw new Error("page_fetch_sequence requires 1 to 20 requests");
+      }
+      const timeoutMs = params.timeoutMs ?? 20000;
+      const maxResponseChars = params.maxResponseChars ?? 10000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
+        throw new Error("Invalid page fetch timeout");
+      }
+      if (!Number.isInteger(maxResponseChars) || maxResponseChars < 256 || maxResponseChars > 50000) {
+        throw new Error("maxResponseChars must be an integer between 256 and 50000");
+      }
+      const tab = await getTargetTab(params.tabId);
+      const execution = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageFetchSequence,
+        args: [{ requests, timeoutMs, maxResponseChars }],
+        injectImmediately: true
+      });
+      if (!execution[0]?.result) throw new Error("Page API sequence execution was interrupted");
+      return execution[0].result;
+    }
+
+    case "run_page_script": {
+      if (typeof params.code !== "string" || !params.code.trim() || params.code.length > 100000) {
+        throw new Error("JavaScript code must contain 1 to 100000 characters");
+      }
+      if (params.args !== undefined && (!params.args || typeof params.args !== "object" || Array.isArray(params.args))) {
+        throw new Error("Script args must be an object");
+      }
+      const maxOutputChars = params.maxOutputChars ?? 20000;
+      if (!Number.isInteger(maxOutputChars) || maxOutputChars < 256 || maxOutputChars > 50000) {
+        throw new Error("maxOutputChars must be an integer between 256 and 50000");
+      }
+      const tab = await getTargetTab(params.tabId);
+      const execution = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: inPageRunScript,
+        args: [{ code: params.code, args: params.args || {}, maxOutputChars }],
+        injectImmediately: true
+      });
+      if (!execution[0]?.result) throw new Error("Page JavaScript execution was interrupted");
+      return execution[0].result;
     }
 
     case "reload_extension": {
@@ -1677,6 +1795,7 @@ async function handleActionInner(action, params) {
       const tab = await getTargetTab(params.tabId);
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
+        injectImmediately: true,
         func: inPageSmartBatchFill,
         args: [params]
       });
@@ -1841,8 +1960,10 @@ async function handleActionInner(action, params) {
       }
 
       const tab = await getTargetTab(params.tabId);
-      const pipelineRes = await handleActionInner("pipeline", { steps, tabId: tab.id });
-      return { success: true, macro: params.name, pipeline: pipelineRes };
+      const pipelineRes = await handleActionInner("pipeline", {
+        steps, tabId: tab.id, timeoutMs: params.timeoutMs, returnSnap: params.returnSnap
+      });
+      return { success: pipelineRes.ok, macro: params.name, pipeline: pipelineRes };
     }
 
     case "list_macros": {
@@ -1898,7 +2019,7 @@ async function handleActionInner(action, params) {
     case "checkpoint": {
       const tab = await getTargetTab(params.tabId);
       const reason = params.reason || "Action or password input required";
-      const timeoutSec = Math.min(Math.max(Number(params.timeoutSec) || 60, 5), 300);
+      const timeoutSec = Math.min(Math.max(Number(params.timeoutSec) || 120, 5), 300);
 
       // Bring window and tab forward so user can immediately take action
       try {
@@ -2033,38 +2154,54 @@ async function handleActionInner(action, params) {
       return res[0]?.result || { count: 0, data: [] };
     }
 
+    case "extract_many": {
+      if (!Array.isArray(params.queries) || params.queries.length < 1 || params.queries.length > 100) {
+        throw new Error("extract_many requires 1 to 100 queries");
+      }
+      for (const query of params.queries) {
+        if (!query || typeof query.selector !== "string" || !query.selector.trim()) {
+          throw new Error("Each extract_many query requires a CSS selector");
+        }
+        if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 200)) {
+          throw new Error("Each extract_many limit must be an integer between 1 and 200");
+        }
+      }
+      const tab = await getTargetTab(params.tabId);
+      const res = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageExtractMany,
+        args: [params.queries],
+        injectImmediately: true
+      });
+      return res[0]?.result || { ok: false, results: [] };
+    }
+
     // UNIVERSAL DYNAMIC ELEMENT WAITER: Wait until an element matching a selector or text appears
     case "wait_for_element": {
       const tab = await getTargetTab(params.tabId);
-      const timeoutMs = Number(params.timeoutMs) || 10000;
+      const timeoutMs = params.timeoutMs === undefined ? 10000 : Number(params.timeoutMs);
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600000) throw new Error('Invalid wait timeout');
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: async (selector, text, timeout) => {
-          const start = performance.now();
-          const targetStr = selector || text;
-          while (performance.now() - start < timeout) {
-            let el = null;
-            if (selector) {
-              try { el = document.querySelector(selector); } catch {}
-            }
-            if (!el && text) {
-              const query = String(text).toLowerCase();
-              const all = Array.from(document.querySelectorAll('*'));
-              el = all.find(e => (e.innerText || e.textContent || '').trim().toLowerCase().includes(query));
-            }
-            if (el) {
-              const s = window.getComputedStyle(el);
-              if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
-                return { found: true, elapsedMs: Math.round(performance.now() - start), tag: el.tagName, id: el.id };
-              }
-            }
-            await new Promise(r => setTimeout(r, 100));
-          }
-          return { found: false, timeout: true };
-        },
-        args: [params.selector, params.text, timeoutMs]
+        func: waitForVisibleElement, injectImmediately: true,
+        args: [params.selector ?? null, params.text ?? null, timeoutMs]
       });
-      return results[0]?.result || { found: false };
+      return results[0]?.result || { ok: false, found: false };
+    }
+
+    case "watch": {
+      const tab = await getTargetTab(params.tabId);
+      const timeoutMs = params.timeoutMs === undefined ? 20000 : Number(params.timeoutMs);
+      if (typeof params.selector !== 'string' || !params.selector) throw new Error('watch requires a CSS selector');
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) throw new Error('Invalid watch timeout');
+      const options = { selector: params.selector, mode: params.mode || 'text', timeoutMs };
+      if (params.attribute !== undefined) options.attribute = params.attribute;
+      if (params.baseline !== undefined) options.baseline = params.baseline;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, func: watchDomChange, injectImmediately: true,
+        args: [options]
+      });
+      return { tabId: tab.id, ...(results[0]?.result || { ok: false, changed: false }) };
     }
 
     // UNIVERSAL FILE DOWNLOAD TRIGGER (Base64, blob, or remote URL)
@@ -2092,42 +2229,36 @@ async function handleActionInner(action, params) {
 // IN-PAGE ULTRA-TOKEN-EFFICIENT SNAPSHOT
 function inPageGetCompactSnapshot() {
   const query = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [contenteditable="true"]';
-  const nodes = Array.from(document.querySelectorAll(query));
-
-  function isVis(el) {
-    const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 2 && r.height > 2;
-  }
+  const nodes = document.querySelectorAll(query);
 
   const tagMap = { button: 'btn', a: 'link', input: 'inp', textarea: 'txt', select: 'sel' };
 
   // Filter out invisible and completely blank elements
-  const actionable = nodes.filter(el => {
-    if (!isVis(el)) return false;
+  const actionable = [];
+  for (const el of nodes) {
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 2 || rect.height <= 2) continue;
     const txt = (el.innerText || el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
     const hasMeaningfulId = el.id && !['button', 'btn', 'icon', 'root', 'app'].includes(el.id.toLowerCase());
     const hasName = !!el.getAttribute('name');
     const isInput = el.matches('input, textarea, select, [contenteditable="true"]');
-    return txt.length > 0 || hasMeaningfulId || hasName || isInput;
-  });
+    if (txt.length > 0 || hasMeaningfulId || hasName || isInput) {
+      actionable.push({ el, txt, top: rect.top, inView: rect.top >= 0 && rect.top <= window.innerHeight });
+    }
+  }
 
   // Prioritize elements in current viewport
   actionable.sort((a, b) => {
-    const ra = a.getBoundingClientRect();
-    const rb = b.getBoundingClientRect();
-    const aInView = ra.top >= 0 && ra.top <= window.innerHeight;
-    const bInView = rb.top >= 0 && rb.top <= window.innerHeight;
-    if (aInView && !bInView) return -1;
-    if (!aInView && bInView) return 1;
-    return ra.top - rb.top;
+    if (a.inView !== b.inView) return a.inView ? -1 : 1;
+    return a.top - b.top;
   });
 
-  const items = actionable.slice(0, 45).map((el, idx) => {
+  const items = actionable.slice(0, 45).map(({ el, txt }, idx) => {
     const itemIdx = idx + 1;
     el.setAttribute('data-bridge-idx', String(itemIdx));
-    const txt = (el.innerText || el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 36);
+    const name = txt.replace(/\s+/g, ' ').slice(0, 36);
     const id = el.id && !['button', 'btn', 'icon'].includes(el.id.toLowerCase()) ? `#${CSS.escape(el.id)}` : null;
     const tag = tagMap[el.tagName.toLowerCase()] || el.tagName.toLowerCase();
     const type = el.type && !['submit', 'text', 'button'].includes(el.type) ? el.type : null;
@@ -2135,7 +2266,7 @@ function inPageGetCompactSnapshot() {
       i: itemIdx,
       t: tag,
       y: type,
-      n: txt || null,
+      n: name || null,
       s: id,
       v: el.value ? String(el.value).slice(0, 25) : null
     };
@@ -2234,12 +2365,13 @@ function inPageClick(params) {
   el.dispatchEvent(new MouseEvent('mouseup', opts));
   el.click();
 
-  // Lively animated neon click ripple directly on the clicked element
-  try {
-    const rect = el.getBoundingClientRect();
-    const ripple = document.createElement('div');
-    ripple.className = '__bridge_click_ripple';
-    ripple.style.cssText = `
+  // Visual feedback is optional; animation and layout reads slow the hot path.
+  if (params.highlight === true) {
+    try {
+      const rect = el.getBoundingClientRect();
+      const ripple = document.createElement('div');
+      ripple.className = '__bridge_click_ripple';
+      ripple.style.cssText = `
       position: fixed;
       top: ${rect.top + rect.height / 2 - 16}px;
       left: ${rect.left + rect.width / 2 - 16}px;
@@ -2253,13 +2385,14 @@ function inPageClick(params) {
       transition: transform 0.35s ease-out, opacity 0.35s ease-out;
       opacity: 1;
     `;
-    document.body.appendChild(ripple);
-    requestAnimationFrame(() => {
-      ripple.style.transform = 'scale(2.5)';
-      ripple.style.opacity = '0';
-      setTimeout(() => ripple.remove(), 380);
-    });
-  } catch {}
+      document.body.appendChild(ripple);
+      requestAnimationFrame(() => {
+        ripple.style.transform = 'scale(2.5)';
+        ripple.style.opacity = '0';
+        setTimeout(() => ripple.remove(), 380);
+      });
+    } catch {}
+  }
 
   // Return selector for highlight
   const clickSel = el.id ? `#${CSS.escape(el.id)}` : (el.getAttribute('data-bridge-idx') ? `[data-bridge-idx="${el.getAttribute('data-bridge-idx')}"]` : null);
@@ -3224,6 +3357,19 @@ function inPageExtractData(params) {
     selector,
     count: items.length,
     data: multiple ? items : (items[0] || null)
+  };
+}
+
+function inPageExtractMany(queries) {
+  return {
+    ok: true,
+    results: queries.map(query => {
+      try {
+        return inPageExtractData(query);
+      } catch (error) {
+        return { selector: query.selector, error: error.message };
+      }
+    })
   };
 }
 

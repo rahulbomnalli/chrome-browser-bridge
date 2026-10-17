@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Antigravity Chrome Agent Bridge",
+  "name": "Chrome Browser Bridge",
   "version": "1.0.0",
-  "description": "Simple and intuitive browser assistant.",
+  "description": "Fast browser automation for Codex, Antigravity and Claude Code through MCP.",
   "permissions": [
     "tabs",
     "activeTab",

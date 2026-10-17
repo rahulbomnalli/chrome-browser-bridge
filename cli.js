@@ -1,77 +1,11 @@
 #!/usr/bin/env node
 // Antigravity Chrome Agent Bridge CLI
-const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const BRIDGE_URL = process.env.BRIDGE_URL || "http://127.0.0.1:8765";
-
-async function postAction(action, params = {}, timeoutMs = 60000) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify({ action, params });
-    const req = http.request(
-      `${BRIDGE_URL}/action`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(data),
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (chunk) => (body += chunk));
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(body);
-            if (res.statusCode >= 200 && res.statusCode < 300 && parsed.success) {
-              resolve(parsed.result);
-            } else {
-              reject(new Error(parsed.error || `HTTP ${res.statusCode}: ${body}`));
-            }
-          } catch (err) {
-            reject(new Error(`Failed to parse response: ${body}`));
-          }
-        });
-      }
-    );
-
-    req.on("error", (err) => {
-      if (err.code === "ECONNREFUSED") {
-        reject(new Error(`Could not connect to Bridge Server at ${BRIDGE_URL}. Is 'npm start' running?`));
-      } else {
-        reject(err);
-      }
-    });
-
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request timed out waiting for Chrome Bridge"));
-    });
-
-    req.write(data);
-    req.end();
-  });
-}
-
-async function getStatus() {
-  return new Promise((resolve, reject) => {
-    http.get(`${BRIDGE_URL}/status`, (res) => {
-      let body = "";
-      res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }).on("error", (err) => {
-      reject(err);
-    });
-  });
-}
+const { createTransport } = require('./lib/transport');
+const transport = createTransport();
+const { postAction, getStatus } = transport;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -79,6 +13,34 @@ async function main() {
 
   try {
     switch (command) {
+      case "config": {
+        console.log(require('./lib/client-config').clientConfig(args[1]));
+        break;
+      }
+      case "doctor": {
+        const status = await getStatus();
+        console.log(JSON.stringify({ node: process.version, bridge: status, ready: !!status.connected,
+          next: status.connected ? "Ready for browser actions" : "Load extension/ at chrome://extensions and check the bridge URL" }, null, 2));
+        if (!status.connected) process.exitCode = 1;
+        break;
+      }
+      case "workflow":
+      case "act": {
+        if (!args[1]) throw new Error(`Usage: bridge ${command} <JSON or @file.json>`);
+        const raw = args[1].startsWith('@') ? fs.readFileSync(args[1].slice(1), 'utf8') : args.slice(1).join(' ');
+        const input = JSON.parse(raw);
+        const result = await postAction(command, Array.isArray(input) && command === 'act' ? { steps: input } : input);
+        console.log(JSON.stringify(result));
+        if (!result.ok) process.exitCode = 1;
+        break;
+      }
+      case "action": {
+        if (!args[1]) throw new Error('Usage: bridge action <action> [JSON params]');
+        const result = await postAction(args[1], JSON.parse(args.slice(2).join(' ') || '{}'));
+        console.log(JSON.stringify(result));
+        if (result?.ok === false || result?.success === false) process.exitCode = 1;
+        break;
+      }
       case "status": {
         try {
           const status = await getStatus();
@@ -151,7 +113,8 @@ async function main() {
           throw new Error('Usage: bridge pipeline \'[{"action":"click","params":{"target":"@1"}},...]\'');
         }
         const res = await postAction("pipeline", { steps });
-        console.log(`Executed ${res.pipelineExecuted} pipeline steps:`, JSON.stringify(res.results, null, 2));
+        console.log(`Executed ${res.count} pipeline steps:`, JSON.stringify(res.results, null, 2));
+        if (!res.ok) process.exitCode = 1;
         break;
       }
 
@@ -409,7 +372,7 @@ async function main() {
           throw new Error("Usage: bridge whatsapp <contact> <message> [--dry-run]");
         }
         console.log(`Sending WhatsApp message to "${contact}"...`);
-        const res = await postAction("whatsapp_send", { contact, message, dryRun }, 30000);
+        const res = await postAction("whatsapp_send", { contact, message, dryRun });
         if (res.isLocked) {
           console.warn("⚠️ WhatsApp Web is locked with App Lock.");
           console.log("Please unlock it in Chrome or run: bridge wait \"Enter WhatsApp password\"");
@@ -447,9 +410,14 @@ async function main() {
       case "help":
       default: {
         console.log(`
-Antigravity Chrome Bridge CLI (v2.0 DevTools Edition)
+Chrome Browser Bridge: Codex / Antigravity / Claude Code
 
 Usage:
+  bridge config <client>            Print Codex, Claude, or Antigravity MCP config
+  bridge doctor                     Diagnose server and extension connection
+  bridge act <JSON|@file.json>       Execute DOM steps in one page injection
+  bridge workflow <JSON|@file.json> Run a complete plan locally with final verification
+  bridge action <name> [JSON]        Machine-readable access to any bridge action
   bridge status                     Check connection status
   bridge tabs                       List open tabs
   bridge switch <tabId>             Switch active tab
@@ -478,4 +446,4 @@ Usage:
   }
 }
 
-main();
+main().finally(() => transport.close());
