@@ -19,7 +19,7 @@ async function executeWorkflow(plan, { getTargetTab, execute }) {
   function validateTargets(steps, verification) {
     if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 DOM steps');
     for (const step of steps) {
-      if (!step || (verification ? step.action !== undefined && step.action !== 'assert' : !['click', 'type', 'select', 'wait', 'assert', 'extract'].includes(step.action))) throw new Error('Invalid DOM action; verify only permits assertions');
+      if (!step || (verification ? step.action !== undefined && step.action !== 'assert' : !['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload'].includes(step.action))) throw new Error('Invalid DOM action; verify only permits assertions');
       const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
       if (targets.length !== 1 || typeof step[targets[0]] !== 'string' || !step[targets[0]]) throw new Error('DOM step requires exactly one target');
       if (['type', 'select'].includes(step.action) && typeof step.value !== 'string') throw new Error('type/select require a string value');

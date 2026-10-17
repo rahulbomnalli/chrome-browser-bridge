@@ -14,16 +14,17 @@ test('compact snapshot reads each candidate layout once and prioritizes the view
   function element(id, top, label) {
     return {
       id, tagName: 'BUTTON', type: 'button', value: '',
-      get innerText() { counters.labels++; return label; },
+      get textContent() { counters.labels++; return label; },
       getBoundingClientRect() { counters.rects++; return { top, width: 80, height: 20 }; },
       getAttribute() { return null; },
-      matches() { return false; },
-      setAttribute(key, value) { this[key] = value; }
+      matches(query) { return query.startsWith('button'); },
+      setAttribute() { throw new Error('Snapshot must not mutate DOM attributes'); }
     };
   }
   const elements = [element('below', 1200, 'Below'), element('visible', 40, 'Visible'), element('above', -50, 'Above')];
   const context = {
-    document: { title: 'Example', querySelectorAll: () => elements },
+    document: { title: 'Example', createTreeWalker: () => { let index = 0; return { nextNode: () => elements[index++] || null }; } },
+    NodeFilter: { SHOW_ELEMENT: 1 },
     window: { innerHeight: 800, location: { href: 'https://example.com/' }, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) },
     CSS: { escape: value => value }
   };
@@ -32,5 +33,5 @@ test('compact snapshot reads each candidate layout once and prioritizes the view
   assert.deepEqual(Array.from(result.items, item => item.n), ['Visible', 'Above', 'Below']);
   assert.equal(counters.rects, elements.length);
   assert.equal(counters.labels, elements.length);
-  assert.equal(elements[1]['data-bridge-idx'], '1');
+  assert.equal(context.__bridgeTargets.get(1), elements[1]);
 });

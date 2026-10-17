@@ -2,6 +2,18 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { executeCdpBatch } = require('../extension/cdp-batch');
 
+test('explicit independent CDP mode dispatches all commands before waiting and reports each failure', async () => {
+  const pending = [];
+  const resultPromise = executeCdpBatch({ parallel: true, commands: [{ method: 'Page.getLayoutMetrics' }, { method: 'Runtime.getIsolateId' }] }, {
+    sendCommand: method => new Promise((resolve, reject) => pending.push({ method, resolve, reject }))
+  });
+  assert.equal(pending.length, 2);
+  pending[1].reject(new Error('Unavailable')); pending[0].resolve({ width: 100 });
+  const result = await resultPromise;
+  assert.equal(result.ok, false); assert.equal(result.parallel, true); assert.equal(result.completed, 1);
+  assert.equal(result.results[1].error, 'Unavailable');
+});
+
 test('CDP batch executes commands in order and returns compact results', async () => {
   const calls = [];
   const result = await executeCdpBatch({

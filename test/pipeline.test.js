@@ -45,11 +45,44 @@ test('pipeline validates waits and nesting before executing anything', async () 
   await assert.rejects(executePipeline({ steps: [{ action: 'click' }, { action: 'wait', ms: 10001 }] }, deps), /Wait/);
 });
 
-test('pipeline cannot report a truncated wait as successful', async () => {
-  const result = await executePipeline({ timeoutMs: 10, steps: [{ action: 'wait', ms: 100 }] }, {
+test('duration waits are rejected before resolving a tab or mutating', async () => {
+  await assert.rejects(executePipeline({ timeoutMs: 10, steps: [{ action: 'wait', ms: 100 }] }, {
     getTargetTab: async () => ({ id: 1 }), execute: async () => { throw new Error('Must not execute'); }
+  }), /wait_for_element/);
+});
+
+test('pipeline fuses known fields and a terminal click, then respects navigation and tab boundaries', async () => {
+  const calls = [];
+  const result = await executePipeline({ returnSnap: false, steps: [
+    { action: 'type', params: { selector: '#a', text: 'one' } },
+    { action: 'type', params: { selector: '#b', text: 'two' } },
+    { action: 'click', params: { selector: '#submit' } },
+    { action: 'wait_for_element', params: { selector: '#next' } },
+    { action: 'type', params: { selector: '#other', text: 'three', tabId: 2 } }
+  ] }, {
+    getTargetTab: async () => ({ id: 1 }),
+    execute: async (action, params) => { calls.push({ action, params }); return {}; },
+    executeDom: async params => { calls.push({ action: 'act', params }); return { ok: true, completed: params.steps.length }; }
   });
-  assert.equal(result.ok, false);
-  assert.equal(result.count, 0);
-  assert.match(result.error, /deadline/);
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 5);
+  assert.deepEqual(calls.map(call => call.action), ['act', 'wait_for_element', 'type']);
+  assert.equal(calls[0].params.steps.length, 3);
+  assert.equal(calls[2].params.tabId, 2);
+});
+
+test('fused errors preserve original step indices and never run later mutations', async () => {
+  const result = await executePipeline({ returnSnap: false, steps: [
+    { action: 'navigate', params: { url: 'https://example.com' } },
+    { action: 'type', params: { selector: '#a', text: 'one' } },
+    { action: 'type', params: { selector: '#b', text: 'two' } },
+    { action: 'click', params: { selector: '#submit' } }
+  ] }, {
+    getTargetTab: async () => ({ id: 1 }),
+    execute: async action => { assert.equal(action, 'navigate'); return { id: 2 }; },
+    executeDom: async params => { assert.equal(params.tabId, 2); return { ok: false, completed: 1, failedStep: 1, error: 'Detached' }; }
+  });
+  assert.equal(result.failedStep, 2);
+  assert.equal(result.count, 2);
+  assert.equal(result.results.length, 2);
 });

@@ -1,4 +1,4 @@
-importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js");
+importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js", "dom-dispatch.js", "state-cache.js");
 // Antigravity Chrome Agent Bridge - Ultra-Fast v4.0 Engine
 const BRIDGE_WS_URL = "ws://127.0.0.1:8765";
 
@@ -18,6 +18,8 @@ const attachedTabs = new Set();
 const networkBuffers = new Map();
 const consoleBuffers = new Map();
 const elementCache = new Map();
+const tabCache = createTabCache(chrome.tabs);
+const planCache = createStorageCache(chrome.storage);
 // O(1) index: requestId -> entry for instant network correlation
 const networkIndexes = new Map();
 
@@ -460,7 +462,7 @@ async function ensureDebuggerAttached(tabId, domains) {
 
 async function getTargetTab(tabId) {
   if (tabId) {
-    const specifiedTab = await chrome.tabs.get(Number(tabId));
+    const specifiedTab = await tabCache.get(Number(tabId));
     if (specifiedTab) {
       activeDesignatedTabId = specifiedTab.id;
       return specifiedTab;
@@ -470,7 +472,7 @@ async function getTargetTab(tabId) {
   // 1. Prioritize activeAgentTabId (dedicated bridge window)
   if (activeAgentTabId) {
     try {
-      const agentTab = await chrome.tabs.get(activeAgentTabId);
+      const agentTab = await tabCache.get(activeAgentTabId);
       if (agentTab) return agentTab;
     } catch {
       activeAgentTabId = null;
@@ -495,7 +497,7 @@ async function getTargetTab(tabId) {
 
   if (activeSandboxTabId) {
     try {
-      const sandboxTab = await chrome.tabs.get(activeSandboxTabId);
+      const sandboxTab = await tabCache.get(activeSandboxTabId);
       if (sandboxTab) return sandboxTab;
     } catch {
       activeSandboxTabId = null;
@@ -505,7 +507,7 @@ async function getTargetTab(tabId) {
 
   if (activeDesignatedTabId) {
     try {
-      const designatedTab = await chrome.tabs.get(activeDesignatedTabId);
+      const designatedTab = await tabCache.get(activeDesignatedTabId);
       if (designatedTab) return designatedTab;
     } catch {
       activeDesignatedTabId = null;
@@ -851,14 +853,14 @@ async function handleActionInner(action, params) {
       let plan = params;
       if (params.name) {
         if (params.stages || params.verify) throw new Error('Use a saved name or a new plan, not both');
-        const saved = (await chrome.storage.local.get('agent_workflows')).agent_workflows || {};
+        const saved = structuredClone(await planCache.get('agent_workflows'));
         if (!Object.prototype.hasOwnProperty.call(saved, params.name)) throw new Error('Saved workflow not found');
         plan = { ...saved[params.name], inputs: params.inputs, tabId: params.tabId, timeoutMs: params.timeoutMs };
       }
       const result = await executeWorkflow(plan, { getTargetTab, execute: handleActionInner });
       if (result.ok && params.saveAs) {
         try {
-          const saved = (await chrome.storage.local.get('agent_workflows')).agent_workflows || {};
+          const saved = structuredClone(await planCache.get('agent_workflows'));
           Object.defineProperty(saved, params.saveAs, { value: { stages: plan.stages, verify: plan.verify }, enumerable: true, configurable: true, writable: true });
           await chrome.storage.local.set({ agent_workflows: saved });
           result.savedAs = params.saveAs;
@@ -876,13 +878,30 @@ async function handleActionInner(action, params) {
     }
     case "act": {
       const tab = await getTargetTab(params.tabId);
-      const execution = await chrome.scripting.executeScript({
-        target: { tabId: tab.id }, func: runDomWorkflow, injectImmediately: true,
-        args: [{ steps: params.steps, timeoutMs: params.timeoutMs ?? 10000 }]
+      return executeDomAction(params, {
+        tabId: tab.id,
+        inject: (options, documentId) => chrome.scripting.executeScript({
+          target: { tabId: tab.id, ...(documentId ? { documentIds: [documentId] } : {}) },
+          func: runDomWorkflow, injectImmediately: true, args: [options]
+        }),
+        insertText: async (text, state) => {
+          await ensureDebuggerAttached(tab.id);
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id, documentIds: [state.documentId] }, injectImmediately: true,
+            func: token => {
+              const pending = globalThis.__bridgeTrustedInput;
+              if (!pending || pending.token !== token || !pending.el.isConnected) throw new Error('Trusted input target expired');
+              pending.el.focus();
+              if (pending.el.isContentEditable) {
+                const range = document.createRange(); range.selectNodeContents(pending.el);
+                const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+              } else pending.el.select();
+            }, args: [state.token]
+          });
+          if (performance.now() >= state.deadline) throw new Error('Workflow deadline exceeded before trusted input');
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.insertText', { text });
+        }
       });
-      const result = execution[0]?.result;
-      if (!result) throw new Error('Page execution interrupted; inspect page before retrying');
-      return { tabId: tab.id, ...result };
     }
 
     case "ping":
@@ -1106,7 +1125,7 @@ async function handleActionInner(action, params) {
                 text: userWaitRes.value,
                 pressEnter: true
               });
-              await new Promise(r => setTimeout(r, 1200));
+              await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: waitForPasswordClear, args: [10000], injectImmediately: true });
             } catch {}
           }
           // Refresh snapshot after unlock
@@ -1136,35 +1155,16 @@ async function handleActionInner(action, params) {
 
     // MULTI-ACTION PIPELINE (Executes multiple steps in one round trip)
     case "pipeline": {
-      return executePipeline(params, { getTargetTab, execute: handleActionInner });
+      return executePipeline(params, { getTargetTab, execute: handleActionInner, executeDom: options => handleActionInner('act', options) });
     }
 
     // INSTANT ELEMENT CLICK + Highlight + Auto-Snap
     case "click": {
       const tab = await getTargetTab(params.tabId);
-      let results;
-      try {
-        results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          injectImmediately: true,
-          func: inPageClick,
-          args: [params]
-        });
-      } catch (err) {
-        // Automatic Obstruction/Overlay Recovery: Dismiss popups, consent banners, dialogs and retry
-        try {
-          await handleActionInner("dismiss_overlays", { tabId: tab.id });
-          await new Promise(r => setTimeout(r, 200));
-          results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            injectImmediately: true,
-            func: inPageClick,
-            args: [params]
-          });
-        } catch {
-          throw err;
-        }
-      }
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, injectImmediately: true,
+        func: inPageClick, args: [params]
+      });
       const clickResult = results[0]?.result || {};
       if (params.highlight === true && clickResult.selector) highlightElement(tab.id, clickResult.selector);
 
@@ -1218,29 +1218,10 @@ async function handleActionInner(action, params) {
     // INSTANT INPUT TYPING + Highlight + Auto-Snap on Submit
     case "type": {
       const tab = await getTargetTab(params.tabId);
-      let results;
-      try {
-        results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          injectImmediately: true,
-          func: inPageType,
-          args: [params]
-        });
-      } catch (err) {
-        // Automatic Obstruction/Overlay Recovery: Dismiss popups, consent banners, dialogs and retry
-        try {
-          await handleActionInner("dismiss_overlays", { tabId: tab.id });
-          await new Promise(r => setTimeout(r, 200));
-          results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            injectImmediately: true,
-            func: inPageType,
-            args: [params]
-          });
-        } catch {
-          throw err;
-        }
-      }
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, injectImmediately: true,
+        func: inPageType, args: [params]
+      });
       const typeResult = results[0]?.result || {};
       if (params.highlight === true && typeResult.selector) highlightElement(tab.id, typeResult.selector);
 
@@ -1645,7 +1626,7 @@ async function handleActionInner(action, params) {
                   text: userWaitRes.value,
                   pressEnter: true
                 });
-                await new Promise(r => setTimeout(r, 1200));
+                await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: waitForPasswordClear, args: [10000], injectImmediately: true });
               } catch {}
             }
           }
@@ -1810,16 +1791,37 @@ async function handleActionInner(action, params) {
         func: async (opts) => {
           const autoScroll = opts?.autoScroll !== false;
           if (autoScroll) {
-            const h = document.body ? Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) : 0;
-            if (h > window.innerHeight) {
-              const step = Math.min(window.innerHeight * 0.75, 600);
-              const maxSteps = Math.min(Math.ceil(h / step), 12);
-              for (let i = 1; i <= maxSteps; i++) {
-                window.scrollTo({ top: i * step, behavior: 'instant' });
-                await new Promise(r => setTimeout(r, 60));
+            // Find scroll container (either window, main, or internal scrollable div)
+            const scrollTargets = [
+              document.querySelector('main'),
+              ...Array.from(document.querySelectorAll('div, section')).filter(el => {
+                const s = window.getComputedStyle(el);
+                return (s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 100;
+              })
+            ].filter(Boolean);
+
+            const target = scrollTargets.find(t => t.scrollHeight > t.clientHeight) || window;
+
+            if (target === window) {
+              const h = document.body ? Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) : 0;
+              if (h > window.innerHeight) {
+                const step = Math.min(window.innerHeight * 0.75, 600);
+                const maxSteps = Math.min(Math.ceil(h / step), 12);
+                for (let i = 1; i <= maxSteps; i++) {
+                  window.scrollTo({ top: i * step, behavior: 'instant' });
+                  await new Promise(requestAnimationFrame);
+                }
+                window.scrollTo({ top: 0, behavior: 'instant' });
               }
-              // Scroll back to top smoothly
-              window.scrollTo({ top: 0, behavior: 'instant' });
+            } else {
+              const total = target.scrollHeight;
+              const step = Math.min(target.clientHeight * 0.8, 600);
+              const maxSteps = Math.min(Math.ceil(total / step), 12);
+              for (let i = 1; i <= maxSteps; i++) {
+                target.scrollTop = i * step;
+                await new Promise(requestAnimationFrame);
+              }
+              target.scrollTop = 0;
             }
           }
 
@@ -1949,30 +1951,30 @@ async function handleActionInner(action, params) {
     // 4. SESSION MACROS (RECORDING & INSTANT REPLAY)
     case "save_macro": {
       if (!params.name || !params.steps) throw new Error("Missing macro name or steps");
-      const macros = await chrome.storage.local.get("agent_macros").then(r => r.agent_macros || {});
-      macros[params.name] = {
+      const macros = structuredClone(await planCache.get("agent_macros"));
+      Object.defineProperty(macros, params.name, { enumerable: true, configurable: true, writable: true, value: {
         name: params.name,
         description: params.description || "",
         steps: params.steps,
         savedAt: new Date().toISOString()
-      };
+      } });
       await chrome.storage.local.set({ agent_macros: macros });
       return { success: true, name: params.name, stepsCount: params.steps.length };
     }
 
     case "run_macro": {
       if (!params.name) throw new Error("Missing macro name");
-      const macros = await chrome.storage.local.get("agent_macros").then(r => r.agent_macros || {});
-      const macro = macros[params.name];
+      const macros = await planCache.get("agent_macros");
+      const macro = Object.prototype.hasOwnProperty.call(macros, params.name) ? macros[params.name] : null;
       if (!macro) throw new Error(`Macro "${params.name}" not found`);
 
-      const steps = JSON.parse(JSON.stringify(macro.steps));
+      const steps = params.variables ? structuredClone(macro.steps) : macro.steps;
       if (params.variables) {
         for (const step of steps) {
           for (const [k, v] of Object.entries(params.variables)) {
             if (step.params) {
-              if (typeof step.params.text === "string") step.params.text = step.params.text.replace(new RegExp(`{{${k}}}`, 'g'), v);
-              if (typeof step.params.url === "string") step.params.url = step.params.url.replace(new RegExp(`{{${k}}}`, 'g'), v);
+              if (typeof step.params.text === "string") step.params.text = step.params.text.replaceAll(`{{${k}}}`, () => String(v));
+              if (typeof step.params.url === "string") step.params.url = step.params.url.replaceAll(`{{${k}}}`, () => String(v));
             }
           }
         }
@@ -1986,7 +1988,7 @@ async function handleActionInner(action, params) {
     }
 
     case "list_macros": {
-      const macros = await chrome.storage.local.get("agent_macros").then(r => r.agent_macros || {});
+      const macros = structuredClone(await planCache.get("agent_macros"));
       return { macros: Object.keys(macros).map(k => ({ name: k, description: macros[k].description, stepsCount: macros[k].steps.length })) };
     }
 
@@ -2053,31 +2055,18 @@ async function handleActionInner(action, params) {
         args: [reason, timeoutSec]
       });
 
-      // Poll until user resolves or timeout expires
       const startTime = Date.now();
-      const maxMs = timeoutSec * 1000;
-      let reasonCleared = "timeout";
-
-      let enteredValue = null;
-
-      while (Date.now() - startTime < maxMs) {
-        await new Promise(r => setTimeout(r, 500));
-        try {
-          const checkRes = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: inPageCheckCheckpointStatus
-          });
-          const st = checkRes[0]?.result;
-          if (st && st.cleared) {
-            reasonCleared = st.reason || "user_action";
-            enteredValue = st.value || null;
-            break;
-          }
-        } catch {
-          // Navigated or page context refreshed -> likely unlocked/submitted
-          reasonCleared = "navigation_or_page_refresh";
-          break;
-        }
+      let reasonCleared = 'timeout', enteredValue = null;
+      try {
+        const response = await chrome.scripting.executeScript({
+          target: { tabId: tab.id }, func: inPageCheckCheckpointStatus,
+          args: [timeoutSec * 1000], injectImmediately: true
+        });
+        const status = response[0]?.result;
+        reasonCleared = status?.reason || 'timeout';
+        enteredValue = status?.value || null;
+      } catch {
+        reasonCleared = 'navigation_or_page_refresh';
       }
 
       // Cleanup banner
@@ -2089,8 +2078,8 @@ async function handleActionInner(action, params) {
       } catch {}
 
       return {
-        success: true,
-        resumed: true,
+        success: reasonCleared !== 'timeout',
+        resumed: reasonCleared !== 'timeout',
         clearedBy: reasonCleared,
         value: enteredValue,
         elapsedSeconds: Math.round((Date.now() - startTime) / 1000)
@@ -2247,55 +2236,49 @@ async function handleActionInner(action, params) {
 
 // IN-PAGE ULTRA-TOKEN-EFFICIENT SNAPSHOT
 function inPageGetCompactSnapshot() {
-  const query = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [contenteditable="true"]';
-  const nodes = document.querySelectorAll(query);
-
+  const query = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="tab"], [role="checkbox"], [role="combobox"], [role="menuitem"], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
   const tagMap = { button: 'btn', a: 'link', input: 'inp', textarea: 'txt', select: 'sel' };
-
-  // Filter out invisible and completely blank elements
   const actionable = [];
-  for (const el of nodes) {
-    const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 2 || rect.height <= 2) continue;
-    const txt = (el.innerText || el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-    const hasMeaningfulId = el.id && !['button', 'btn', 'icon', 'root', 'app'].includes(el.id.toLowerCase());
-    const hasName = !!el.getAttribute('name');
-    const isInput = el.matches('input, textarea, select, [contenteditable="true"]');
-    if (txt.length > 0 || hasMeaningfulId || hasName || isInput) {
-      actionable.push({ el, txt, top: rect.top, inView: rect.top >= 0 && rect.top <= window.innerHeight });
+  const seen = new Set();
+  const roots = [document];
+  function consider(el) {
+    if (seen.has(el)) return;
+    seen.add(el);
+    if (el.shadowRoot) roots.push(el.shadowRoot);
+    if (el.tagName === 'SLOT') for (const node of el.assignedElements({ flatten: true })) {
+      consider(node);
+      roots.push(node);
     }
+    if (!el.matches(query)) return;
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 2 || rect.height <= 2) return;
+    const txt = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || el.placeholder || (el.type !== 'password' ? el.value : '') || '').trim();
+    const isInput = el.matches('input, textarea, select, [contenteditable="true"]');
+    if (!txt && !el.id && !el.getAttribute('name') && !isInput) return;
+    actionable.push({ el, txt, top: rect.top, inView: rect.top >= 0 && rect.top <= window.innerHeight });
   }
-
-  // Prioritize elements in current viewport
-  actionable.sort((a, b) => {
-    if (a.inView !== b.inView) return a.inView ? -1 : 1;
-    return a.top - b.top;
-  });
-
+  for (let i = 0; i < roots.length; i++) {
+    const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = walker.nextNode())) consider(node);
+  }
+  actionable.sort((a, b) => a.inView !== b.inView ? (a.inView ? -1 : 1) : a.top - b.top);
+  // References live only in the extension's isolated world. Replacing the map expires
+  // old indices without DOM writes, mutation storms, or retaining detached nodes.
+  globalThis.__bridgeTargets = new Map();
   const items = actionable.slice(0, 45).map(({ el, txt }, idx) => {
-    const itemIdx = idx + 1;
-    el.setAttribute('data-bridge-idx', String(itemIdx));
-    const name = txt.replace(/\s+/g, ' ').slice(0, 36);
-    const id = el.id && !['button', 'btn', 'icon'].includes(el.id.toLowerCase()) ? `#${CSS.escape(el.id)}` : null;
-    const tag = tagMap[el.tagName.toLowerCase()] || el.tagName.toLowerCase();
-    const type = el.type && !['submit', 'text', 'button'].includes(el.type) ? el.type : null;
-    return {
-      i: itemIdx,
-      t: tag,
-      y: type,
-      n: name || null,
-      s: id,
-      v: el.value ? String(el.value).slice(0, 25) : null
-    };
+    const i = idx + 1;
+    globalThis.__bridgeTargets.set(i, el);
+    const item = { i, t: tagMap[el.tagName.toLowerCase()] || el.tagName.toLowerCase() };
+    if (el.type && !['submit', 'text', 'button'].includes(el.type)) item.y = el.type;
+    if (txt) item.n = txt.replace(/\s+/g, ' ').slice(0, 36);
+    if (el.id) item.s = '#' + CSS.escape(el.id);
+    if (el.value && el.type !== 'password') item.v = String(el.value).slice(0, 25);
+    return item;
   });
-
-  return {
-    title: document.title,
-    url: window.location.href,
-    items
-  };
+  return { title: document.title, url: window.location.href, items };
 }
 
 function inPageClick(params) {
@@ -2306,15 +2289,8 @@ function inPageClick(params) {
   const targetStr = String(target || selector || text || '');
   if ((targetStr.startsWith('@') || targetStr.startsWith('#')) && !isNaN(Number(targetStr.slice(1)))) {
     const idx = targetStr.slice(1);
-    el = document.querySelector(`[data-bridge-idx="${idx}"]`);
-    if (!el) {
-      const query = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [contenteditable="true"]';
-      const visible = Array.from(document.querySelectorAll(query)).filter(e => {
-        const s = window.getComputedStyle(e);
-        return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
-      });
-      el = visible[Number(idx) - 1];
-    }
+    el = globalThis.__bridgeTargets?.get(Number(idx));
+    if (!el?.isConnected) throw new Error('Stale snapshot reference: ' + targetStr);
   }
 
   // 1. Direct CSS Selector
@@ -2425,15 +2401,8 @@ function inPageType(params) {
   const targetStr = String(target || selector || '');
   if ((targetStr.startsWith('@') || targetStr.startsWith('#')) && !isNaN(Number(targetStr.slice(1)))) {
     const idx = targetStr.slice(1);
-    el = document.querySelector(`[data-bridge-idx="${idx}"]`);
-    if (!el) {
-      const query = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [contenteditable="true"]';
-      const visible = Array.from(document.querySelectorAll(query)).filter(e => {
-        const s = window.getComputedStyle(e);
-        return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
-      });
-      el = visible[Number(idx) - 1];
-    }
+    el = globalThis.__bridgeTargets?.get(Number(idx));
+    if (!el?.isConnected) throw new Error('Stale snapshot reference: ' + targetStr);
   }
 
   // 1. Direct CSS Selector
@@ -2514,8 +2483,8 @@ function inPageType(params) {
     } else {
       el.value = newVal;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
   }
 
   if (pressEnter) {
@@ -2546,8 +2515,8 @@ function inPageBatchForm(params) {
     if (el) {
       el.focus();
       el.value = val;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     }
   }
   if (submitSelector) {
@@ -2632,8 +2601,8 @@ function inPageSmartBatchFill(params) {
           el.value = value;
         }
       }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
       // Subtle visual highlight for 1 second
       const prevOutline = el.style.outline;
@@ -2942,6 +2911,7 @@ function inPageDetectSecurityChallenge() {
 function inPageShowCheckpointPrompt(reason, timeoutSec) {
   try {
     window.__bridge_checkpoint_cleared = false;
+    delete window.__bridge_checkpoint_input_value;
     window.__bridge_had_password = !!document.querySelector('input[type="password"]');
 
     let banner = document.getElementById('__bridge_checkpoint_banner');
@@ -3016,8 +2986,8 @@ function inPageShowCheckpointPrompt(reason, timeoutSec) {
         const pagePw = document.querySelector('input[type="password"], input[type="text"]:focus');
         if (pagePw) {
           pagePw.value = val;
-          pagePw.dispatchEvent(new Event('input', { bubbles: true }));
-          pagePw.dispatchEvent(new Event('change', { bubbles: true }));
+          pagePw.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          pagePw.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         }
       }
       window.__bridge_checkpoint_cleared = true;
@@ -3072,25 +3042,33 @@ function inPageShowCheckpointPrompt(reason, timeoutSec) {
   } catch {}
 }
 
-function inPageCheckCheckpointStatus() {
-  if (window.__bridge_checkpoint_cleared) {
-    return {
-      cleared: true,
-      reason: window.__bridge_checkpoint_input_value ? 'user_provided_input' : 'user_clicked_resume',
-      value: window.__bridge_checkpoint_input_value || null
+async function inPageCheckCheckpointStatus(timeoutMs = 120000) {
+  function status() {
+    if (window.__bridge_checkpoint_cleared) return { cleared: true, reason: window.__bridge_checkpoint_input_value ? 'user_provided_input' : 'user_clicked_resume', value: window.__bridge_checkpoint_input_value || null };
+    if (window.__bridge_had_password) {
+      const fields = [...document.querySelectorAll('input[type="password"]')].filter(el => !el.closest('#__bridge_checkpoint_banner'));
+      if (!fields.some(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')) return { cleared: true, reason: 'password_field_disappeared' };
+    }
+    return null;
+  }
+  const immediate = status(); if (immediate) return immediate;
+  return new Promise(resolve => {
+    let frame, done = false;
+    const finish = result => {
+      if (done) return; done = true;
+      clearTimeout(timer); cancelAnimationFrame(frame); observer.disconnect();
+      document.removeEventListener('click', wake, true); document.removeEventListener('keydown', wake, true);
+      resolve(result);
     };
-  }
-  if (window.__bridge_had_password) {
-    const pw = document.querySelector('input[type="password"]');
-    if (!pw) {
-      return { cleared: true, reason: 'password_field_disappeared' };
-    }
-    const s = window.getComputedStyle(pw);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') {
-      return { cleared: true, reason: 'password_field_hidden' };
-    }
-  }
-  return { cleared: false };
+    const check = () => { const result = status(); if (result) finish(result); };
+    const wake = () => queueMicrotask(check);
+    const observer = new MutationObserver(check);
+    const timer = setTimeout(() => finish({ cleared: false, reason: 'timeout' }), timeoutMs);
+    const tick = () => { check(); if (!done) frame = requestAnimationFrame(tick); };
+    observer.observe(document, { childList: true, subtree: true, attributes: true });
+    document.addEventListener('click', wake, true); document.addEventListener('keydown', wake, true);
+    frame = requestAnimationFrame(tick); check();
+  });
 }
 
 function inPageDismissOverlays() {
@@ -3223,21 +3201,20 @@ async function inPageWhatsAppSendMessage(opts) {
     };
   }
 
-  // Helper: Condition-based element waiter
-  const waitForEl = (sel, timeoutMs = 4000) => {
-    return new Promise((resolve) => {
-      const el = document.querySelector(sel);
-      if (el) return resolve(el);
-      const start = performance.now();
-      const interval = setInterval(() => {
-        const found = document.querySelector(sel);
-        if (found || performance.now() - start > timeoutMs) {
-          clearInterval(interval);
-          resolve(found || null);
-        }
-      }, 50);
+  const waitForState = (find, timeoutMs = 4000) => {
+    const immediate = find(); if (immediate) return Promise.resolve(immediate);
+    return new Promise(resolve => {
+      let frame, done = false;
+      const finish = value => { if (done) return; done = true; clearTimeout(timer); cancelAnimationFrame(frame); observer.disconnect(); resolve(value); };
+      const check = () => { const value = find(); if (value) finish(value); };
+      const observer = new MutationObserver(check);
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      const tick = () => { check(); if (!done) frame = requestAnimationFrame(tick); };
+      observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+      frame = requestAnimationFrame(tick); check();
     });
   };
+  const waitForEl = (selector, timeoutMs) => waitForState(() => document.querySelector(selector), timeoutMs);
 
   // 2. Wait for WhatsApp UI readiness
   const searchInput = await waitForEl('div[contenteditable="true"][data-tab="3"], [data-testid="chat-list-search"], [role="textbox"], #side [contenteditable="true"]', 5000);
@@ -3266,27 +3243,17 @@ async function inPageWhatsAppSendMessage(opts) {
   timings.searchTypedMs = Math.round(performance.now() - t0);
 
   // 4. Wait for matching search result in chat list
-  await new Promise(r => setTimeout(r, 400));
-
   const contactLower = contact.toLowerCase().trim();
-  let matchedEl = null;
   let matchedName = null;
-
-  const searchStart = performance.now();
-  while (performance.now() - searchStart < 3000) {
-    const cells = Array.from(document.querySelectorAll('#side div[role="listitem"], #side [data-testid="cell-frame-container"]'));
+  const matchedEl = await waitForState(() => {
+    const cells = document.querySelectorAll('#side div[role="listitem"], #side [data-testid="cell-frame-container"]');
     for (const cell of cells) {
       const titleSpan = cell.querySelector('span[title], span[dir="auto"], [data-testid="cell-frame-title"]');
-      const name = (titleSpan ? (titleSpan.getAttribute('title') || titleSpan.textContent) : cell.textContent || "").trim();
-      if (name.toLowerCase().includes(contactLower)) {
-        matchedEl = cell;
-        matchedName = name;
-        break;
-      }
+      const name = (titleSpan ? (titleSpan.getAttribute('title') || titleSpan.textContent) : cell.textContent || '').trim();
+      if (name.toLowerCase().includes(contactLower)) { matchedName = name; return cell; }
     }
-    if (matchedEl) break;
-    await new Promise(r => setTimeout(r, 100));
-  }
+    return null;
+  }, 3000);
 
   if (!matchedEl) {
     return {
@@ -3333,8 +3300,7 @@ async function inPageWhatsAppSendMessage(opts) {
   }
 
   // 9. Send message
-  await new Promise(r => setTimeout(r, 50));
-  let sendBtn = document.querySelector('button[data-testid="compose-btn-send"], span[data-icon="send"], button[aria-label="Send"]');
+  const sendBtn = await waitForEl('button[data-testid="compose-btn-send"], span[data-icon="send"], button[aria-label="Send"]', 3000);
   if (sendBtn) {
     const clickTarget = sendBtn.tagName === 'BUTTON' ? sendBtn : sendBtn.closest('button') || sendBtn;
     clickTarget.click();
@@ -3345,13 +3311,12 @@ async function inPageWhatsAppSendMessage(opts) {
   }
 
   // 10. Verify message sent
-  await new Promise(r => setTimeout(r, 200));
-  const hasTextCleared = (composeInput.textContent || '').trim() === '';
+  const hasTextCleared = !!await waitForState(() => composeInput.isConnected && (composeInput.textContent || '').trim() === '', 3000);
   timings.verifiedMs = Math.round(performance.now() - t0);
 
   return {
-    success: true,
-    sent: true,
+    success: hasTextCleared,
+    sent: hasTextCleared,
     contact: matchedName,
     message,
     inputCleared: hasTextCleared,
@@ -3399,3 +3364,18 @@ updateBadge(false);
 connectToBridge();
 chrome.runtime.onStartup.addListener(() => connectToBridge());
 chrome.runtime.onInstalled.addListener(() => connectToBridge());
+
+async function waitForPasswordClear(timeoutMs) {
+  const clear = () => ![...document.querySelectorAll('input[type="password"]')].some(el => !el.closest('#__bridge_checkpoint_banner') && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+  if (clear()) return true;
+  return new Promise(resolve => {
+    let frame, done = false;
+    const finish = value => { if (done) return; done = true; clearTimeout(timer); cancelAnimationFrame(frame); observer.disconnect(); resolve(value); };
+    const check = () => { if (clear()) finish(true); };
+    const observer = new MutationObserver(check);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const tick = () => { check(); if (!done) frame = requestAnimationFrame(tick); };
+    observer.observe(document, { childList: true, subtree: true, attributes: true });
+    frame = requestAnimationFrame(tick); check();
+  });
+}

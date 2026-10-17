@@ -18,6 +18,18 @@ async function executeCdpBatch(options, { sendCommand }) {
   }
 
   const started = performance.now();
+  if (options.parallel === true) {
+    // Explicitly independent commands only. All commands are dispatched, including
+    // those after a failure; callers must not use this mode for dependent mutations.
+    const settled = await Promise.allSettled(commands.map(command => sendCommand(command.method, command.params || {})));
+    const results = settled.map((entry, index) => {
+      if (entry.status === 'rejected') return { method: commands[index].method, ok: false, error: entry.reason?.message || String(entry.reason) };
+      const result = entry.value ?? null;
+      const serialized = JSON.stringify(result);
+      return { method: commands[index].method, ok: true, result: serialized.length > maxResultChars ? { truncated: true, preview: serialized.slice(0, maxResultChars), originalChars: serialized.length } : result };
+    });
+    return { ok: results.every(result => result.ok), parallel: true, completed: results.filter(result => result.ok).length, results, durationMs: performance.now() - started };
+  }
   const results = [];
   for (let index = 0; index < commands.length; index++) {
     const command = commands[index];

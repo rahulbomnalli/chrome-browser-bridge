@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { executePipeline } = require('../extension/pipeline');
+const { executeDomAction } = require('../extension/dom-dispatch');
 const { executeWorkflow } = require('../extension/workflow');
 const { inPageFetchMany } = require('../extension/page-api');
 const { executeCdpBatch } = require('../extension/cdp-batch');
@@ -19,7 +20,8 @@ function createDispatch(executeScript, local, debuggerMocks = {}) {
       debugger: { sendCommand: debuggerMocks.sendCommand || (async (_target, method, params) => ({ method, params })) },
       storage: { local: local || { get: async () => ({ agent_macros: { fast: { steps: [{ action: 'click', params: { target: '#go' } }] } } }) } }
     },
-    getTargetTab: async () => ({ id: 7 }), ensureDebuggerAttached: debuggerMocks.ensureDebuggerAttached || (async () => true), executePipeline, executeWorkflow,
+    getTargetTab: async () => ({ id: 7 }), ensureDebuggerAttached: debuggerMocks.ensureDebuggerAttached || (async () => true), executePipeline, executeWorkflow, executeDomAction, structuredClone,
+    planCache: { get: async key => (await (local || { get: async () => ({ agent_macros: { fast: { steps: [{ action: 'click', params: { target: '#go' } }] } } }) }).get(key))[key] || {} },
     getNetworkBuffer: debuggerMocks.getNetworkBuffer || (() => ({ toArray: () => [] })),
     getConsoleBuffer: debuggerMocks.getConsoleBuffer || (() => ({ toArray: () => [] })),
     inPageFetchMany,

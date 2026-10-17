@@ -6,17 +6,51 @@ async function runDomWorkflow(options) {
   const budget = options.timeoutMs ?? 10000;
   if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 steps');
   if (!Number.isFinite(budget) || budget <= 0 || budget > 600000) throw new Error('Invalid workflow timeout');
-  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract']);
+  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload']);
   // Validate the complete plan before performing any mutation.
   for (const step of steps) {
     if (!step || !supported.has(step.action)) throw new Error('Each step needs a supported action');
     const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
     if (targets.length !== 1 || typeof step[targets[0]] !== 'string' || !step[targets[0]]) throw new Error('Each step needs exactly one nonempty selector, role, label, or placeholder');
     if (step.name !== undefined && (targets[0] !== 'role' || typeof step.name !== 'string' || !step.name)) throw new Error('name requires a role target');
-    if (step.selector) document.querySelectorAll(step.selector); // Reject malformed selectors before starting.
+    if (step.selector && !/^@\d+$/.test(step.selector)) (document.createDocumentFragment?.() || document).querySelectorAll(step.selector);
     if (['type', 'select'].includes(step.action) && typeof step.value !== 'string') throw new Error('type/select require a string value');
+    if (step.trusted !== undefined && (step.action !== 'type' || typeof step.trusted !== 'boolean')) throw new Error('trusted is only supported for type');
+    if (step.action === 'upload') {
+      if (!Array.isArray(step.files) || !step.files.length || step.files.length > 10) throw new Error('upload requires 1 to 10 files');
+      for (const file of step.files) {
+        if (!file || typeof file.name !== 'string' || !file.name ||
+          [file.text, file.base64, file.canvas].filter(value => value !== undefined).length !== 1) throw new Error('Each file needs a name and one of text, base64, canvas');
+        if (file.text !== undefined && (typeof file.text !== 'string' || file.text.length > 4000000)) throw new Error('Invalid file text');
+        if (file.base64 !== undefined && (typeof file.base64 !== 'string' || file.base64.length > 5500000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.base64))) throw new Error('Invalid file base64');
+        if (file.canvas !== undefined && (!file.canvas || !Number.isInteger(file.canvas.width) || !Number.isInteger(file.canvas.height) || file.canvas.width < 1 || file.canvas.height < 1 || file.canvas.width * file.canvas.height > 4000000)) throw new Error('Invalid canvas size');
+      }
+    }
   }
   const normalize = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  let rootIndex = globalThis.__bridgeRootIndex;
+  if (!rootIndex || rootIndex.document !== document) {
+    rootIndex?.observer?.disconnect();
+    rootIndex = { document, roots: null, dirty: false };
+    rootIndex.observer = typeof MutationObserver === 'function' ? new MutationObserver(() => { rootIndex.dirty = true; }) : null;
+    globalThis.__bridgeRootIndex = rootIndex;
+  }
+  const rootObserver = rootIndex.observer;
+  function queryAll(selector) {
+    if (rootObserver?.takeRecords?.().length) rootIndex.dirty = true;
+    if (!rootIndex.roots || rootIndex.dirty) {
+      const roots = rootIndex.roots = [document]; rootIndex.dirty = false;
+      rootObserver?.disconnect();
+      for (let i = 0; i < roots.length; i++) {
+        rootObserver?.observe(roots[i], { childList: true, subtree: true });
+        if (!document.createTreeWalker || typeof NodeFilter === 'undefined') continue;
+        const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
+        let node;
+        while ((node = walker.nextNode())) if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    }
+    return rootIndex.roots.flatMap(root => [...root.querySelectorAll(selector)]);
+  }
   function roleOf(el) {
     const explicit = el.getAttribute('role');
     if (explicit) return explicit.toLowerCase();
@@ -38,21 +72,28 @@ async function runDomWorkflow(options) {
       el.getAttribute('title') || el.getAttribute('placeholder') || el.innerText || el.value || el.textContent || '';
   }
   function candidates(step) {
-    if (step.selector) return document.querySelectorAll(step.selector);
+    if (/^@\d+$/.test(step.selector || '')) {
+      const el = globalThis.__bridgeTargets?.get(Number(step.selector.slice(1)));
+      if (!el?.isConnected) throw new Error(`Stale snapshot reference: ${step.selector}`);
+      return [el];
+    }
+    if (step.selector) return queryAll(step.selector);
     if (step.role) {
-      const controls = document.querySelectorAll('[role], button, a[href], input, textarea, select, [contenteditable="true"]');
+      const controls = queryAll('[role], button, a[href], input, textarea, select, [contenteditable="true"]');
       return [...controls].filter(el => roleOf(el) === normalize(step.role) && (step.name === undefined || normalize(accessibleName(el)) === normalize(step.name)));
     }
-    if (step.placeholder) return [...document.querySelectorAll('[placeholder]')].filter(el => normalize(el.getAttribute('placeholder')) === normalize(step.placeholder));
-    const labels = [...document.querySelectorAll('label')].filter(el => normalize(el.textContent) === normalize(step.label));
+    if (step.placeholder) return queryAll('[placeholder]').filter(el => normalize(el.getAttribute('placeholder')) === normalize(step.placeholder));
+    const labels = queryAll('label').filter(el => normalize(el.textContent) === normalize(step.label));
     const controls = labels.map(el => el.control || (el.htmlFor && document.getElementById(el.htmlFor)) || el.querySelector('input, textarea, select, [contenteditable="true"]')).filter(Boolean);
-    const ariaControls = [...document.querySelectorAll('input[aria-label], textarea[aria-label], select[aria-label], [contenteditable="true"][aria-label]')].filter(el => normalize(el.getAttribute('aria-label')) === normalize(step.label));
+    const ariaControls = queryAll('input[aria-label], textarea[aria-label], select[aria-label], [contenteditable="true"][aria-label]').filter(el => normalize(el.getAttribute('aria-label')) === normalize(step.label));
     return [...new Set([...controls, ...ariaControls])];
   }
   const targetName = step => step.selector || step.label || step.placeholder || `${step.role}${step.name ? `: ${step.name}` : ''}`;
   function resolve(step) {
     const matches = [...candidates(step)].filter(el => {
-      if (!el.isConnected || !el.getClientRects().length) return false;
+      if (!el.isConnected) return false;
+      if (step.action === 'upload' && el.type === 'file') return true;
+      if (!el.getClientRects().length) return false;
       const style = getComputedStyle(el);
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     });
@@ -61,7 +102,7 @@ async function runDomWorkflow(options) {
     if (!el) return null;
     if (step.text !== undefined && !el.textContent.includes(step.text)) return null;
     if (step.equals !== undefined && String('value' in el ? el.value : el.textContent) !== step.equals) return null;
-    if (['click', 'type', 'select'].includes(step.action) && (el.disabled || el.getAttribute('aria-disabled') === 'true')) return null;
+    if (['click', 'type', 'select', 'upload'].includes(step.action) && (el.disabled || el.getAttribute('aria-disabled') === 'true' || el.readOnly)) return null;
     return el;
   }
   async function ready(step) {
@@ -70,20 +111,32 @@ async function runDomWorkflow(options) {
     const remaining = budget - (performance.now() - started);
     if (remaining <= 0) throw new Error(`Deadline waiting for ${targetName(step)}`);
     return new Promise((resolvePromise, reject) => {
-      let observer;
-      const cleanup = () => { clearTimeout(timer); clearInterval(poll); observer?.disconnect(); };
+      let observer, frame, done = false;
+      const cleanup = () => { done = true; clearTimeout(timer); if (frame !== undefined) cancelAnimationFrame(frame); observer?.disconnect(); };
       const check = () => {
+        if (done) return;
         try { const el = resolve(step); if (el) { cleanup(); resolvePromise(el); } }
         catch (error) { cleanup(); reject(error); }
       };
       const timer = setTimeout(() => { cleanup(); reject(new Error(`Deadline waiting for ${targetName(step)}`)); }, remaining);
-      // Property-only updates and visibility changes need a bounded fallback.
-      const poll = setInterval(check, 50);
+      // Mutations wake immediately; frames cover property-only changes and CSS transitions.
+      const onFrame = () => { rootIndex.dirty = true; check(); if (!done) frame = requestAnimationFrame(onFrame); };
+      if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(onFrame);
       observer = new MutationObserver(check);
       observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+      for (const root of rootIndex.roots || []) if (root !== document) observer.observe(root, { childList: true, subtree: true, attributes: true, characterData: true });
       check();
     });
   }
+  if (options.resumeToken) {
+    const pending = globalThis.__bridgeTrustedInput;
+    delete globalThis.__bridgeTrustedInput;
+    if (!pending || pending.token !== options.resumeToken || !pending.el.isConnected ||
+        String(pending.el.isContentEditable ? pending.el.textContent : pending.el.value) !== pending.value) {
+      return { ok: false, trustedInputFailed: true, completed: 0, failedStep: 0, results, error: 'Trusted input verification failed; inspect state before resuming' };
+    }
+  }
+  if (options.verifyOnly) return { ok: true, completed: 0, results };
   for (let index = 0; index < steps.length; index++) {
     const step = steps[index];
     try {
@@ -94,28 +147,67 @@ async function runDomWorkflow(options) {
         case 'click': {
           el.scrollIntoView({ block: 'center', inline: 'center' });
           const rect = el.getBoundingClientRect();
-          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          const root = el.getRootNode?.() || document;
+          const hit = (root.elementFromPoint ? root : document).elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
           if (!hit || !(hit === el || el.contains(hit))) throw new Error(`Obstructed target: ${targetName(step)}`);
           el.click();
           break;
         }
         case 'type': {
           el.focus();
-          if (el.isContentEditable) el.textContent = step.value;
-          else {
+          if (!step.trusted && el.isContentEditable) el.textContent = step.value;
+          else if (!step.trusted) {
             const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
             Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, step.value);
           }
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!step.trusted) {
+            el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+            await Promise.resolve(); // Allow synchronous framework reconciliation and queued microtasks.
+          }
+          if (step.trusted || String(el.isContentEditable ? el.textContent : el.value) !== step.value) {
+            if (el.isContentEditable) {
+              const range = document.createRange(); range.selectNodeContents(el);
+              const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+            } else if (typeof el.select === 'function') el.select();
+            else throw new Error('Field does not support trusted text replacement');
+            const token = crypto.randomUUID();
+            globalThis.__bridgeTrustedInput = { token, el, value: step.value };
+            return { ok: false, needsTrustedInput: true, token, failedStep: index, completed: results.length, results, durationMs: performance.now() - started };
+          }
           break;
         }
         case 'select':
           if (!(el instanceof HTMLSelectElement) || ![...el.options].some(option => option.value === step.value && !option.disabled)) throw new Error('Select option unavailable');
           Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, step.value);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
           break;
+        case 'upload': {
+          if (!(el instanceof HTMLInputElement) || el.type !== 'file') throw new Error('upload requires a file input');
+          if (!el.multiple && step.files.length > 1) throw new Error('File input does not allow multiple files');
+          const transfer = new DataTransfer();
+          for (const file of step.files) {
+            let bytes = file.text;
+            let type = file.type || 'text/plain';
+            if (file.base64 !== undefined) { bytes = Uint8Array.from(atob(file.base64), c => c.charCodeAt(0)); type = file.type || 'application/octet-stream'; }
+            if (file.canvas) {
+              const canvas = document.createElement('canvas');
+              canvas.width = file.canvas.width; canvas.height = file.canvas.height;
+              const ctx = canvas.getContext('2d'); ctx.fillStyle = file.canvas.color || '#000000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+              bytes = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+              if (!bytes) throw new Error('Canvas encoding failed');
+              type = 'image/png';
+            }
+            transfer.items.add(new File([bytes], file.name, { type }));
+          }
+          if (performance.now() - started >= budget) throw new Error('Workflow deadline exceeded before upload');
+          el.files = transfer.files;
+          el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          value = { files: transfer.files.length };
+          break;
+        }
         case 'extract':
           value = step.attribute === 'value' ? el.value : step.attribute ? el.getAttribute(step.attribute) : el.textContent;
           value = value == null ? null : String(value).slice(0, 8000);
@@ -161,9 +253,10 @@ async function waitForVisibleElement(selector, text, timeoutMs = 10000) {
   const immediate = find();
   if (immediate) return { found: true, elapsedMs: performance.now() - started, tag: immediate.tagName, id: immediate.id };
   return new Promise(resolve => {
-    let observer;
-    const cleanup = () => { clearTimeout(timer); clearInterval(poll); observer?.disconnect(); };
+    let observer, frame, done = false;
+    const cleanup = () => { done = true; clearTimeout(timer); if (frame !== undefined) cancelAnimationFrame(frame); observer?.disconnect(); };
     const check = () => {
+      if (done) return;
       const el = find();
       if (!el) return;
       cleanup();
@@ -174,7 +267,8 @@ async function waitForVisibleElement(selector, text, timeoutMs = 10000) {
       resolve({ ok: false, found: false, timeout: true, elapsedMs: performance.now() - started });
     }, timeoutMs);
     // CSS transitions and property-only updates do not always emit mutations.
-    const poll = setInterval(check, 100);
+    const onFrame = () => { check(); if (!done) frame = requestAnimationFrame(onFrame); };
+    if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(onFrame);
     observer = new MutationObserver(check);
     observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
     check();

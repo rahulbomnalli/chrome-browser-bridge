@@ -11,6 +11,7 @@ let pendingRequests = new Map();
 let requestIdCounter = 1;
 
 const latencySamples = [];
+const recentActions = []; // Names and timings only; never inputs, URLs, page content, or credentials.
 let completedActions = 0;
 function allowedOrigin(origin) {
   if (!origin) return true;
@@ -42,6 +43,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   const path = req.url;
+
+  if (path === '/metrics' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ scope: 'Last 128 completed bridge actions; excludes model/client time', actions: recentActions }));
+    return;
+  }
 
   // Fast-path: /action POST (most frequent)
   if (path === "/action" && req.method === "POST") {
@@ -173,14 +180,17 @@ wss.on("connection", (ws, req) => {
       }
 
       if (msg.id && pendingRequests.get(msg.id)?.socket === ws) {
-        const { resolve, reject, timer, started } = pendingRequests.get(msg.id);
+        const { resolve, reject, timer, started, action, requestBytes, startedAt } = pendingRequests.get(msg.id);
         clearTimeout(timer);
         pendingRequests.delete(msg.id);
         completedActions++;
         latencySamples.push(Math.round((performance.now() - started) * 100) / 100);
         if (latencySamples.length > 512) latencySamples.shift();
+        recentActions.push({ action, startedAt, roundTripMs: Math.round((performance.now() - started) * 100) / 100,
+          browserMs: msg.durationMs ?? null, requestBytes, responseBytes: raw.length, ok: !!msg.success && msg.result?.ok !== false && msg.result?.success !== false });
+        if (recentActions.length > 128) recentActions.shift();
 
-        if (msg.durationMs !== undefined) {
+        if (process.env.BRIDGE_TRACE === '1' && msg.durationMs !== undefined) {
           console.log(`[Bridge Server] Action completed in ${msg.durationMs}ms`);
         }
 
@@ -235,9 +245,10 @@ async function executeAction(action, params = {}, timeoutMs) {
       reject(new Error(`Timeout (${dynamicTimeout}ms) waiting for Chrome to execute '${action}'`));
     }, dynamicTimeout);
 
-    pendingRequests.set(id, { resolve, reject, timer, socket: extensionSocket, started: performance.now() });
+    const wire = JSON.stringify({ id, action, params });
+    pendingRequests.set(id, { resolve, reject, timer, socket: extensionSocket, started: performance.now(), action, startedAt: Date.now(), requestBytes: Buffer.byteLength(wire) });
 
-    extensionSocket.send(JSON.stringify({ id, action, params }), (err) => {
+    extensionSocket.send(wire, (err) => {
       if (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);

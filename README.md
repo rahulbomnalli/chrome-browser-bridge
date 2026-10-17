@@ -59,7 +59,7 @@ Run `node cli.js config antigravity`. Merge the generated `mcpServers` entry int
 
 ### Choose your tool catalog
 
-Generated configs use `BRIDGE_TOOL_PROFILE=compact`: 25 tools covering complete task workflows, navigation, DOM batches, pipelines, extraction, API discovery, single/concurrent/dependent authenticated page API calls, main-world JavaScript injection, ordered Chrome DevTools commands, combined network/console diagnostics, screenshots, human checkpoints, one-call WhatsApp sending, parallel page reads, saved macros, and event-driven page watching. This keeps the catalog focused while exposing fast paths for common tasks. Omit this environment variable to expose the full catalog. Existing full-catalog configurations remain supported.
+Generated Antigravity configs use `BRIDGE_TOOL_PROFILE=fast`: 14 tools centered on complete workflows, short model instructions and compact successful DOM results. Use the [Antigravity execution skill](docs/antigravity-fast-skill.md) and restart `agy` after configuration changes. Codex and Claude configs retain `BRIDGE_TOOL_PROFILE=compact` with 25 tools. Omit this variable for the full catalog. Existing configurations remain supported. See the [latency audit and measured results](docs/performance-audit.md).
 
 ## Give it a goal
 
@@ -88,13 +88,13 @@ The MCP server supplies workflow instructions to the client: reuse fresh observa
 }
 ```
 
-Use this for SPAs and same-document forms. Each step needs exactly one target: `selector`, `role` (optionally with exact `name`), `label`, or `placeholder`. Semantic targets can avoid a preliminary snapshot when the control's label is known from the request. Matches must be unique and visible; ambiguous targets stop the workflow. Actions are `click`, `type`, `select`, `wait`, `assert`, and `extract`. `text` matches a substring; `equals` checks exact input value or text. Extraction returns at most 8,000 characters per step. Clicks reject obstructed targets. Input events are synthetic; use CDP when a website requires trusted input. Full navigation destroys the document execution context: use a pipeline instead.
+Use this for SPAs and same-document forms. Each step needs exactly one target: `selector` (including a fresh `@index`), `role` with optional exact `name`, `label`, or `placeholder`. Matches must be unique; ambiguous targets stop the workflow. Actions are `click`, `type`, `select`, `wait`, `assert`, `extract`, and `upload`. `text` matches a substring; `equals` checks exact input value or text. Extraction returns at most 8,000 characters per step. Clicks reject obstructed targets. Native setters dispatch composed events; rejected text replacements or `trusted:true` invoke a verified CDP continuation. `upload` accepts named text/base64/Canvas files generated inside the page, including explicit hidden file inputs. Full navigation destroys the document execution context: use a pipeline or workflow instead.
 
 ```json
 {"steps":[{"action":"type","placeholder":"Message","value":"Hello"},{"action":"click","role":"button","name":"Send"}]}
 ```
 
-**`chrome_pipeline`: dependent steps across documents.** One bridge request, ordered browser operations, snapshots suppressed between steps, one optional final snapshot. It follows newly opened tabs and returns `failedStep` and completed results on failure. It never retries completed actions.
+**`chrome_pipeline`: dependent steps across documents.** One bridge request, ordered browser operations, snapshots suppressed between steps, one optional final snapshot. Compatible selector type/wait steps and a terminal click are fused into one injection. Use `act` for arbitrary same-document sequences. It follows newly opened tabs and returns `failedStep` and completed results on failure. It never retries completed actions. Duration-only `wait` steps are rejected; use `wait_for_element` or an `act` state condition.
 
 ```json
 {

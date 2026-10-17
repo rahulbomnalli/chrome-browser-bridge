@@ -15,7 +15,7 @@ test('client configs use absolute executable and entry paths', () => {
     const config = JSON.parse(clientConfig(client)).mcpServers['chrome-browser-bridge'];
     assert.equal(config.command, process.execPath);
     assert.ok(path.isAbsolute(config.args[0]));
-    assert.equal(config.env.BRIDGE_TOOL_PROFILE, 'compact');
+    assert.equal(config.env.BRIDGE_TOOL_PROFILE, client === 'antigravity' ? 'fast' : 'compact');
   }
   assert.match(clientConfig('codex'), /tool_timeout_sec = 180/);
   assert.throws(() => clientConfig('unknown'));
@@ -71,6 +71,10 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   });
   const routed = await Promise.all(Array.from({ length: 20 }, (_, i) => transport.postAction('echo', { i })));
   assert.deepEqual(routed.map(result => result.params.i), Array.from({ length: 20 }, (_, i) => i));
+  const metrics = await (await fetch(`${url}/metrics`)).json();
+  assert.equal(metrics.actions.length, 20);
+  assert.ok(metrics.actions.every(item => item.action === 'echo' && item.requestBytes > 0 && item.responseBytes > 0));
+  assert.ok(metrics.actions.every(item => !('params' in item) && !('result' in item)));
   // Replacement sockets cannot resolve another connection's pending request.
   const held = transport.postAction('hold');
   await once(ws, 'message');

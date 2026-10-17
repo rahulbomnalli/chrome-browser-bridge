@@ -24,6 +24,20 @@ async function main() {
         if (!status.connected) process.exitCode = 1;
         break;
       }
+      case 'profile': {
+        const response = await fetch(new URL('/metrics', process.env.BRIDGE_URL || 'http://127.0.0.1:8765'), { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error('Metrics unavailable; restart the bridge server with the updated build');
+        const metrics = await response.json();
+        const groups = new Map();
+        for (const action of metrics.actions) {
+          const item = groups.get(action.action) || { action: action.action, calls: 0, totalMs: 0, failures: 0 };
+          item.calls++; item.totalMs += action.roundTripMs; if (!action.ok) item.failures++;
+          groups.set(action.action, item);
+        }
+        console.log(JSON.stringify({ scope: metrics.scope, totalCalls: metrics.actions.length,
+          byAction: [...groups.values()].map(item => ({ ...item, totalMs: +item.totalMs.toFixed(2) })), recent: metrics.actions.slice(-12) }, null, 2));
+        break;
+      }
       case "workflow":
       case "act": {
         if (!args[1]) throw new Error(`Usage: bridge ${command} <JSON or @file.json>`);
@@ -415,6 +429,7 @@ Chrome Browser Bridge: Codex / Antigravity / Claude Code
 Usage:
   bridge config <client>            Print Codex, Claude, or Antigravity MCP config
   bridge doctor                     Diagnose server and extension connection
+  bridge profile                    Show recent action counts and browser/bridge timing
   bridge act <JSON|@file.json>       Execute DOM steps in one page injection
   bridge workflow <JSON|@file.json> Run a complete plan locally with final verification
   bridge action <name> [JSON]        Machine-readable access to any bridge action
