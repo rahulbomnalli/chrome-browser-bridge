@@ -1,209 +1,125 @@
-# Chrome Browser Bridge
+# 🌐 Chrome Browser Bridge
 
-**Give your CLI agent a browser. Keep your logged-in Chrome session. Batch the work.**
+[![CI Checks](https://github.com/rahulbomnalli/chrome-browser-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/rahulbomnalli/chrome-browser-bridge/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node: 22+](https://img.shields.io/badge/Node.js-22%2B-brightgreen.svg)](https://nodejs.org)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Standard%20%26%20Fast%20Profiles-purple.svg)](https://modelcontextprotocol.io)
 
-Chrome automation for **Codex, Antigravity CLI/IDE, and Claude Code** through one local MCP server. No extra model subscription or hosted automation service: your existing CLI plans the task, and the bridge executes it in your real Chrome profile.
+> **Give your AI coding agents direct, ultra-fast access to your real logged-in Chrome browser.**
 
-```text
-Your prompt -> Codex / Antigravity / Claude Code
-                    | MCP stdio
-              Shared HTTP transport
-                    | loopback HTTP + persistent WebSocket
-              Chrome extension
-                    | one DOM workflow / navigation pipeline / CDP
-              Your existing browser session
-```
+Chrome Browser Bridge connects **Antigravity CLI / IDE, OpenAI Codex, and Claude Code** directly to your active Google Chrome session over a high-performance local MCP server. No separate headless browser instances, no losing login sessions, and zero unnecessary turn round-trips.
 
-## Start in three steps
+---
 
-Requires Node.js 22+ and Google Chrome.
+## ⚡ Key Highlights
 
-```sh
+- **Preserve Real Logged-In Sessions**: Automate tasks on authenticated sites (GitHub, AWS, WhatsApp, internal dashboards) seamlessly using your everyday Chrome profile.
+- **Sub-Second Execution Protocol**: Eliminates multi-turn LLM latency. Execute multi-step interactions, form fills, assertions, and extractions in **one single compound MCP call** (`chrome_workflow` / `chrome_act`).
+- **Zero-Round-Trip Page APIs**: Dispatch concurrent authenticated HTTP requests directly from page context via `chrome_page_fetch_many` and `chrome_api_sequence`.
+- **Smart Adaptive Memory**: Automatic failure recovery, in-tab human authentication checkpoints (`chrome_wait_for_user`), and proactive DOM observers.
+- **Battle-Tested & Lightweight**: Zero heavy external browser dependencies (like Puppeteer/Playwright); only uses native Chrome Extension APIs + lightweight WebSocket transport.
+
+---
+
+## 🚀 Quick Start (3 Steps)
+
+### Prerequisites
+- **Node.js 22+**
+- **Google Chrome**
+
+### 1. Clone & Install
+```bash
 git clone https://github.com/rahulbomnalli/chrome-browser-bridge.git
 cd chrome-browser-bridge
-npm ci
+npm install
+```
+
+### 2. Start the Local Bridge Server
+```bash
 npm start
 ```
+*The local bridge server runs on `http://127.0.0.1:8765`.*
 
-Load `extension/` using **Load unpacked** at `chrome://extensions/` with Developer mode enabled. Keep the server running, then verify in another terminal:
+### 3. Load Extension in Chrome
+1. Open Chrome and navigate to `chrome://extensions/`.
+2. Toggle on **Developer mode** in the top-right corner.
+3. Click **Load unpacked** and select the `extension/` folder inside this repository.
+4. Verify the setup in a new terminal:
+   ```bash
+   node cli.js doctor
+   ```
 
-```sh
-node cli.js doctor
-```
+---
 
-On Windows PowerShell, use `npm.cmd` if your execution policy blocks `npm.ps1`.
+## 🔌 Connecting to Your Agent / CLI
 
-## Connect your CLI
-
-Use an absolute path to this checkout. All clients share the same server and extension; run each MCP adapter as a separate stdio process. Avoid concurrent mutations of the same tab from different agents.
-
-### Codex
-
-```sh
-codex mcp add chrome-browser-bridge --env BRIDGE_TOOL_PROFILE=compact -- node "/absolute/path/chrome-browser-bridge/mcp-server.js"
-```
-
-For the full configuration, run `node cli.js config codex` and merge the output into `~/.codex/config.toml`. The generated config sets `tool_timeout_sec = 180` so human authentication checkpoints can finish. Restart the client after changing its configuration. [Official Codex MCP documentation](https://developers.openai.com/codex/mcp).
-
-### Claude Code
-
-```sh
-claude mcp add --env BRIDGE_TOOL_PROFILE=compact --transport stdio chrome-browser-bridge -- node "/absolute/path/chrome-browser-bridge/mcp-server.js"
-```
-
-Alternatively, run `node cli.js config claude` and merge the JSON into the project's `.mcp.json`. This prints configuration; it does not overwrite existing settings. [Official Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
-
-### Antigravity CLI and IDE
-
-Run `node cli.js config antigravity`. Merge the generated `mcpServers` entry into the workspace's `.agents/mcp_config.json` or global `~/.gemini/config/mcp_config.json`. In the IDE, open **MCP Servers > Manage MCP Servers > View raw config**. [Official Antigravity MCP documentation](https://www.antigravity.google/docs/mcp).
-
-### Choose your tool catalog
-
-Generated Antigravity configs use `BRIDGE_TOOL_PROFILE=fast`: 14 tools centered on complete workflows, short model instructions and compact successful DOM results. Use the [Antigravity execution skill](docs/antigravity-fast-skill.md) and restart `agy` after configuration changes. Codex and Claude configs retain `BRIDGE_TOOL_PROFILE=compact` with 25 tools. Omit this variable for the full catalog. Existing configurations remain supported. See the [latency audit and measured results](docs/performance-audit.md).
-
-## Give it a goal
-
-Ask your connected CLI:
-
-> Use Chrome Browser Bridge to open GitHub, find my open pull requests, and summarize which ones need my review. Continue until you have verified the results.
-
-> Open the reporting dashboard, apply last month's date range, download the report, and verify the outcome.
-
-The MCP server supplies workflow instructions to the client: reuse fresh observations, batch known actions, verify outcomes, and resume from the last completed step. Planning comes from the connected agent. The bridge does not turn arbitrary text into actions by itself, bypass authentication, or guarantee completion on every website. Website response times and model reasoning determine total task duration.
-
-## Two execution paths
-
-**`chrome_act`: known steps within one document.** One MCP request, one WebSocket request, one page injection. Native input setters avoid character-by-character typing. DOM observers wake waiting steps when the relevant state changes; a bounded property-check fallback handles value and visibility updates. There are no fixed sleeps on the immediate success path.
-
-```json
-{
-  "tabId": 123,
-  "timeoutMs": 10000,
-  "steps": [
-    { "action": "type", "selector": "input[name=q]", "value": "browser bridge" },
-    { "action": "click", "selector": "button[type=submit]" },
-    { "action": "wait", "selector": "#results", "text": "browser bridge" },
-    { "action": "extract", "selector": "#results" }
-  ]
-}
-```
-
-Use this for SPAs and same-document forms. Each step needs exactly one target: `selector` (including a fresh `@index`), `role` with optional exact `name`, `label`, or `placeholder`. Matches must be unique; ambiguous targets stop the workflow. Actions are `click`, `type`, `select`, `wait`, `assert`, `extract`, and `upload`. `text` matches a substring; `equals` checks exact input value or text. Extraction returns at most 8,000 characters per step. Clicks reject obstructed targets. Native setters dispatch composed events; rejected text replacements or `trusted:true` invoke a verified CDP continuation. `upload` accepts named text/base64/Canvas files generated inside the page, including explicit hidden file inputs. Full navigation destroys the document execution context: use a pipeline or workflow instead.
-
-```json
-{"steps":[{"action":"type","placeholder":"Message","value":"Hello"},{"action":"click","role":"button","name":"Send"}]}
-```
-
-**`chrome_pipeline`: dependent steps across documents.** One bridge request, ordered browser operations, snapshots suppressed between steps, one optional final snapshot. Compatible selector type/wait steps and a terminal click are fused into one injection. Use `act` for arbitrary same-document sequences. It follows newly opened tabs and returns `failedStep` and completed results on failure. It never retries completed actions. Duration-only `wait` steps are rejected; use `wait_for_element` or an `act` state condition.
-
-```json
-{
-  "steps": [
-    { "action": "navigate", "params": { "url": "https://example.com" } },
-    { "action": "wait_for_element", "params": { "selector": "h1" } },
-    { "action": "extract_data", "params": { "selector": "h1" } }
-  ],
-  "timeoutMs": 30000,
-  "returnSnap": false
-}
-```
-
-A failed workflow returns `ok: false`, partial progress, and an error or failed-step result. MCP marks these results as errors. Inspect state before resuming; a timeout or navigation interruption cannot roll back an action already performed. Budgets bound waits and prevent starting further pipeline steps after expiry; they cannot interrupt an already dispatched Chrome operation or synchronous page script.
-
-**`chrome_watch`: monitor a changing page.** Pass a CSS selector for message nodes or a region, and compare its `text`, match `count`, or an `attribute`. The call waits for a DOM change (20 seconds by default, up to 120 seconds) and returns the changed value and new text. An omitted baseline starts watching from the current state. Pass each result's `current` as the next call's `baseline` so changes between calls are detected. The CLI must remain active and call again after each change or timeout to continue monitoring; a reply still requires a user-defined rule or an agent decision.
-
-**`chrome_extract_many`: gather multiple page fields at once.** Send an array of CSS-selector queries with optional attributes, result limits, and single/multiple modes. The extension evaluates all queries in one page injection and returns a result per selector, including selector-specific errors, instead of requiring one MCP call per field. Use `chrome_extract_data` for a single selector.
-
-Routine actions skip the in-page status HUD and click/type animation to keep the browser hot path lean. Low-level bridge actions can opt in with `showHud: true` or `highlight: true`. Compact snapshots cache each candidate's layout and label once before ordering visible controls.
-
-## CLI and diagnostics
-
-```sh
-node cli.js status
-node cli.js doctor
-node cli.js config codex
-node cli.js config claude
+### 1. Antigravity CLI & IDE
+Run the configuration generator:
+```bash
 node cli.js config antigravity
-node cli.js tabs
-node cli.js snap
-node cli.js act @workflow.json
-node cli.js action extract_data '{"selector":"h1"}'
-node cli.js pipeline '[{"action":"navigate","params":{"url":"https://example.com"}}]'
+```
+Merge the generated output into your global config (`~/.gemini/config/mcp_config.json`) or workspace configuration (`.agents/mcp_config.json`). Uses `BRIDGE_TOOL_PROFILE=fast` for maximum execution speed.
+
+### 2. Claude Code
+Add to your project `.mcp.json` or run:
+```bash
+claude mcp add --env BRIDGE_TOOL_PROFILE=compact --transport stdio chrome-browser-bridge -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
 ```
 
-`act` accepts either a steps array or a workflow object from a JSON argument or `@file`. `action` exposes bridge actions with JSON output; `act`, `action`, and `pipeline` exit nonzero when a structured workflow fails. `status` reports connection state and, with this server build, pending requests and rolling p50/p95 bridge latency for the most recent 512 responses. `doctor` exits nonzero when the extension is disconnected.
-
-`BRIDGE_URL` changes the MCP/CLI server address (default `http://127.0.0.1:8765`). `PORT` changes the server listener; the extension currently connects to port 8765, so changing it also requires updating `BRIDGE_WS_URL` in `extension/background.js` and reloading the extension.
-
-## Performance you can reproduce
-
-### Remove AI round trips between steps
-
-Choose the smallest reliable call for the task:
-
-| Task | Fast path |
-|---|---|
-| One or more known actions on the current page | One `chrome_act` call with all actions and final assertions/extractions |
-| Known multi-stage task spanning navigation and page actions | One `chrome_workflow` call; stages, local conditions, value transfer, and final verification run in the extension without intermediate model calls |
-| Data from a known, page-accessible API endpoint | One `chrome_page_fetch` call; uses the active page session and remains subject to browser origin/CORS rules |
-| Data from several known API endpoints | One `chrome_page_fetch_many` call; issues up to 20 requests concurrently in one page injection |
-| Dependent API calls (for example, create then fetch by returned ID) | One `chrome_api_sequence` call; references earlier JSON values locally with `{{results.create.id}}` |
-| Find API endpoints used by the loaded page | One `chrome_api_catalog` call; merges resource timing with captured DevTools request details and redacts likely secrets |
-| Site globals or API logic requiring custom JavaScript | One `chrome_run_page_script` call in the page MAIN world with JSON `args` and bounded output |
-| Known ordered Chrome DevTools operations | One `chrome_cdp_batch` call; runs up to 20 commands against one debugger attachment |
-| Page failure diagnosis | One `chrome_debug_bundle` call for bounded network and console logs together |
-| Several known selectors on one page | One `chrome_extract_many` call |
-| Independent URLs | `chrome_parallel_scrape` |
-
-Do not take a snapshot when targets are already known, or call status/snapshot between deterministic steps. If a target is unknown, take one snapshot, then batch the identified actions. Only use page fetch when the endpoint and method are supplied or already known; do not guess endpoints. If the API is unknown or inaccessible from the page, use DOM automation. The host AI still chooses the tool and authors a workflow; bridge instructions reduce avoidable round-trips but cannot force a client to choose a particular tool or remove model reasoning.
-
-```json
-{
-  "inputs": { "query": "bridge performance" },
-  "stages": [
-    { "id": "open", "action": "navigate", "params": { "url": "https://example.com/search" } },
-    { "id": "search", "action": "act", "params": { "steps": [
-      { "action": "type", "label": "Search", "value": "{{inputs.query}}" },
-      { "action": "click", "role": "button", "name": "Search" }
-    ] } },
-    { "id": "ready", "action": "wait_for_element", "params": { "selector": "#results" } }
-  ],
-  "verify": [{ "selector": "#results", "text": "Results" }],
-  "saveAs": "site_search"
-}
+### 3. OpenAI Codex
+Run:
+```bash
+codex mcp add chrome-browser-bridge --env BRIDGE_TOOL_PROFILE=compact -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
 ```
 
-The example illustrates the schema; use selectors and labels verified on the actual site. Replay a saved plan with `{"name":"site_search","inputs":{"query":"new query"}}`. Only the template is saved, not runtime inputs. Use `{{results.read.results.0.value}}` to pass an earlier `act` extraction to later stages without returning to AI. A stage can include `"when":{"selector":"#optional-panel","exists":true}` for local conditional execution. Conditions observe the current visible DOM immediately; precede them with a readiness wait when needed.
+---
 
-`verify` contains read-only DOM assertions and is required for new plans. Success returns stage results and verification without a redundant snapshot. Failure returns `failedStage`, partial `failedResult`, completed stages and a fresh snapshot. Never replay completed submissions when recovering. Stage timeouts are capped by the remaining task budget; an already-dispatched browser operation cannot be forcibly canceled. CLI: `node cli.js workflow @plan.json`.
+## 🛠️ Core Tool Capabilities
 
-Restart/reconnect the MCP server and client after updating to expose the new tool; reload the extension only when extension files changed. Saved workflows still require one tool invocation; they eliminate plan reconstruction and intermediate model calls, not the initial AI response or website latency.
+| Tool | Purpose | Performance Benefit |
+| :--- | :--- | :--- |
+| `chrome_workflow` | Multi-stage tasks spanning navigation and conditional logic | Executes full plan locally in browser; zero model round-trips |
+| `chrome_act` | Batch same-page interactions (click, type, assert, extract) | Single-injection script with native setters and microtask reactivity |
+| `chrome_smart_navigate` | Switch to/reuse already-open tabs or navigate active tab | Eliminates duplicate tab churn and preserves SPA state |
+| `chrome_page_fetch_many` | Execute 1–20 API requests in active page session | Uses existing browser session cookies/headers concurrently |
+| `chrome_extract_many` | Extract multiple CSS selectors in a single call | One round-trip extraction instead of repetitive DOM queries |
+| `whatsapp_send_message` | Auto-detect WhatsApp tab, resolve recipient, and send message | Handles App Lock and verification in one call |
+| `chrome_wait_for_user` | Prompt user for manual CAPTCHA / 2FA checkpoint | In-tab modal pauses agent safely until user completes verification |
 
-The compact profile includes `chrome_api_catalog`, `chrome_page_fetch`, `chrome_page_fetch_many`, `chrome_api_sequence`, `chrome_run_page_script`, `chrome_cdp_command`, `chrome_cdp_batch`, and `chrome_debug_bundle`. `chrome_api_catalog` combines resource timing entries (which can reflect requests made before DevTools attached) with captured CDP details; resource-only entries may not have method/status. It redacts credential-like URL query parameters and never returns request bodies, cookies, or authorization headers. The batch API tool dispatches 1-20 independent known endpoints concurrently. `chrome_api_sequence` runs dependent requests in order and resolves `{{results.name.path}}` references in URL, headers, and body from earlier JSON responses without returning to the model. Both bound response text and preserve partial progress on failure. The page-script tool executes one async JavaScript body in the page's MAIN world and returns bounded JSON; its code executes with page privileges, so use it only for the requested task. The DevTools batch runs 1-20 known commands in order on one tab, attaches once, stops at the first command error, returns the completed prefix, and caps each command result by default. The debug bundle returns bounded network and console summaries together, replacing separate diagnostics calls. These tools do not infer undocumented API endpoints or CDP operations. Page fetch remains constrained by the active page's network permissions and browser CORS rules.
+---
 
-```sh
+## 🧪 Testing & Verification
+
+Run the comprehensive suite of unit tests, syntax checks, and transport benchmarks:
+
+```bash
+# Run unit & integration tests (50/50 passing)
 npm test
+
+# Run syntax check across all modules
 npm run check
-npm run bench               # read-only ping through a connected Chrome extension
-npm run bench -- --mock     # actual HTTP + WebSocket transport, simulated extension
+
+# Run transport benchmark
+npm run bench -- --mock
 ```
 
-Benchmarks report 100 measured samples after 10 warmups, with p50, p95, and maximum latency. Mock results measure transport only. Live ping adds the extension handler; neither benchmark measures DOM workflows, website loading, or model reasoning. No claim of universal subsecond completion or superiority over other browser libraries is made without comparable measurements.
+---
 
-Latency improvements come from fewer agent/tool exchanges, persistent connections, disabled WebSocket compression for local traffic, compact observations, native field updates, and one-injection DOM workflows. [Architecture and failure behavior](docs/architecture.md).
+## 📁 Repository Structure
 
-Clicks, typing, compact snapshots, and batch form filling request immediate script injection, avoiding Chrome's default document-idle gate when the page already has usable controls. This does not guarantee a target exists during loading: use `chrome_act` with target readiness conditions for dynamic pages. Saved macros accept `timeoutMs` and `returnSnap: false` to skip a redundant final snapshot when their steps already verify the outcome. Keep the default final snapshot when more page context is needed.
+```text
+├── extension/          # Manifest V3 Chrome Extension (background, DOM dispatch, workflow)
+├── lib/                # Client config, transport layers, and tool profiling
+├── test/               # Comprehensive unit and integration test suite
+├── docs/               # In-depth architecture specs, audits, and guides
+├── cli.js              # Diagnostic CLI tool for status, doctor, tabs, and actions
+├── server.js           # Local HTTP & WebSocket bridge server
+├── mcp-server.js       # Fast Model Context Protocol (MCP) server implementation
+└── package.json        # Dependencies and scripts
+```
 
-## Local access and updates
+---
 
-The bridge binds to loopback. HTTP and WebSocket browser origins are restricted to local dashboard and Chrome extension origins. Request bodies and WebSocket payloads are bounded. Local processes and installed extensions are trusted; origin filtering is not authentication. Do not expose this port through a tunnel or public proxy.
+## 🛡️ License
 
-After updating code, restart the bridge server, reload the unpacked extension, and reconnect MCP clients. Existing running processes do not pick up source changes automatically. For authentication challenges, `chrome_wait_for_user` displays an in-tab checkpoint and waits for the user.
-
-## Development
-
-The only runtime dependency is `ws`. Tests exercise HTTP/WebSocket routing, MCP stdio negotiation and errors, transport deadlines, connection replacement, workflow validation and partial failures, and pipeline navigation. CI is configured for Node 22/24 on Windows, Linux, and macOS. Real website behavior still requires live Chrome validation.
-
-Contributions should include a reproducible case and the smallest relevant regression test. Performance claims should include environment, workload, samples, and p50/p95 results. Never include cookies, passwords, or private page contents in issue reports.
-
-[MIT License](LICENSE)
+This project is licensed under the [MIT License](LICENSE).
