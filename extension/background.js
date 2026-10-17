@@ -1802,22 +1802,41 @@ async function handleActionInner(action, params) {
       return results[0]?.result || {};
     }
 
-    // READ PAGE - Extract clean readable text
+    // READ PAGE - Extract clean readable text with universal auto-scroll support
     case "read_page": {
       const tab = await getTargetTab(params.tabId);
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => {
-          const main = document.querySelector('article, main, #content, .content') || document.body;
-          const headings = Array.from(main.querySelectorAll('h1, h2, h3')).map(h => h.innerText.trim()).filter(Boolean);
-          const paras = Array.from(main.querySelectorAll('p')).map(p => p.innerText.trim()).filter(t => t.length > 25);
+        func: async (opts) => {
+          const autoScroll = opts?.autoScroll !== false;
+          if (autoScroll) {
+            const h = document.body ? Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) : 0;
+            if (h > window.innerHeight) {
+              const step = Math.min(window.innerHeight * 0.75, 600);
+              const maxSteps = Math.min(Math.ceil(h / step), 12);
+              for (let i = 1; i <= maxSteps; i++) {
+                window.scrollTo({ top: i * step, behavior: 'instant' });
+                await new Promise(r => setTimeout(r, 60));
+              }
+              // Scroll back to top smoothly
+              window.scrollTo({ top: 0, behavior: 'instant' });
+            }
+          }
+
+          const main = document.querySelector('article, main, #content, .content, [role="main"]') || document.body;
+          const headings = Array.from(main.querySelectorAll('h1, h2, h3, h4')).map(h => h.innerText.trim()).filter(Boolean);
+          const paras = Array.from(main.querySelectorAll('p, li, section > div')).map(p => p.innerText.trim()).filter(t => t.length > 20 && !t.startsWith('http'));
+          const textSnippet = main.innerText.slice(0, 15000);
+
           return {
             title: headings[0] || document.title,
-            headings: headings.slice(0, 8),
-            content: paras.slice(0, 10).join('\n\n'),
+            headings: Array.from(new Set(headings)).slice(0, 20),
+            content: paras.slice(0, 30).join('\n\n'),
+            fullTextSnippet: textSnippet,
             url: location.href
           };
-        }
+        },
+        args: [params || {}]
       });
       return results[0]?.result || {};
     }
