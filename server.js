@@ -49,7 +49,7 @@ const server = http.createServer(async (req, res) => {
     let size = 0;
     req.on("data", chunk => {
       size += chunk.length;
-      if (size > 4 * 1024 * 1024) {
+      if (size > 16 * 1024 * 1024) {
         if (!res.writableEnded) {
           res.writeHead(413, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, error: 'Request body too large' }));
@@ -61,7 +61,8 @@ const server = http.createServer(async (req, res) => {
     req.on("end", async () => {
       if (res.writableEnded) return;
       try {
-        const payload = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+        const rawBody = chunks.length === 1 ? chunks[0].toString() : (chunks.length ? Buffer.concat(chunks).toString() : "{}");
+        const payload = JSON.parse(rawBody || "{}");
         const action = payload.action;
         const params = payload.params || {};
 

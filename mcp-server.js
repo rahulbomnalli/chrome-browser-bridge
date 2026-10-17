@@ -824,6 +824,9 @@ async function handleToolCall(name, args) {
     }
     case "chrome_evaluate": {
       const res = await postAction("eval", { code: args.code, tabId: args.tabId });
+      if (res && res.success === false) {
+        throw new Error(res.error || "Evaluation failed in page");
+      }
       return JSON.stringify(res.result !== undefined ? res.result : res);
     }
     case "chrome_run_page_script": {
