@@ -58,30 +58,37 @@ Run the configuration generator:
 ```bash
 node cli.js config antigravity
 ```
-Merge the generated output into your global config (`~/.gemini/config/mcp_config.json`) or workspace configuration (`.agents/mcp_config.json`). Uses `BRIDGE_TOOL_PROFILE=fast` for maximum execution speed.
+Merge the generated output into your global config (`~/.gemini/config/mcp_config.json`) or workspace configuration (`.agents/mcp_config.json`). Generated Antigravity, Claude, and Codex configs use the task-focused `fast` profile: eleven tools centered on complete plans and high-impact batch/parallel operations, with compact successful results. Set `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full` to expose the broader catalogs.
 
 ### 2. Claude Code
 Add to your project `.mcp.json` or run:
 ```bash
-claude mcp add --env BRIDGE_TOOL_PROFILE=compact --transport stdio chrome-browser-bridge -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
+claude mcp add --env BRIDGE_TOOL_PROFILE=fast --transport stdio chrome-browser-bridge -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
 ```
 
 ### 3. OpenAI Codex
 Run:
 ```bash
-codex mcp add chrome-browser-bridge --env BRIDGE_TOOL_PROFILE=compact -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
+codex mcp add chrome-browser-bridge --env BRIDGE_TOOL_PROFILE=fast -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
 ```
 
 ---
 
 ## 🛠️ Core Tool Capabilities
 
+The server defaults to the fifteen-tool `fast` profile, and generated client configs set it explicitly. It includes complete workflows plus parallel URL research, batched extraction/API requests, idempotent `browser.execute_plan`, cancellation/status checkpoints, and bounded execution metrics. Specialized page-script, CDP, and macro tools remain available through `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full`.
+
 | Tool | Purpose | Performance Benefit |
 | :--- | :--- | :--- |
 | `chrome_workflow` | Multi-stage tasks spanning navigation and conditional logic | Executes full plan locally in browser; zero model round-trips |
+| `browser.execute_plan` | Execute a validated plan with idempotency and persisted checkpoints | Prevents duplicate submissions and serializes same-tab plans |
+| `browser.cancel_plan` / `browser.plan_status` | Cancel at a stage boundary or inspect saved task state | Safe recovery without blind replay |
+| `browser.metrics` | Read MCP and bridge latency/outcome traces | Separates bridge cost from unavailable model/client time |
 | `chrome_act` | Batch same-page interactions (click, type, assert, extract) | Single-injection script with native setters and microtask reactivity |
+| `chrome_parallel_scrape` | Read independent known URLs concurrently | One call for multi-site page research |
 | `chrome_smart_navigate` | Switch to/reuse already-open tabs or navigate active tab | Eliminates duplicate tab churn and preserves SPA state |
 | `chrome_page_fetch_many` | Execute 1–20 API requests in active page session | Uses existing browser session cookies/headers concurrently |
+| `chrome_api_sequence` | Execute dependent API requests in one page injection | Reuses prior response values without model round-trips |
 | `chrome_extract_many` | Extract multiple CSS selectors in a single call | One round-trip extraction instead of repetitive DOM queries |
 | `whatsapp_send_message` | Auto-detect WhatsApp tab, resolve recipient, and send message | Handles App Lock and verification in one call |
 | `chrome_wait_for_user` | Prompt user for manual CAPTCHA / 2FA checkpoint | In-tab modal pauses agent safely until user completes verification |

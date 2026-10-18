@@ -45,8 +45,14 @@ const server = http.createServer(async (req, res) => {
   const path = req.url;
 
   if (path === '/metrics' && req.method === 'GET') {
+    const successful = recentActions.filter(action => action.ok).length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ scope: 'Last 128 completed bridge actions; excludes model/client time', actions: recentActions }));
+    res.end(JSON.stringify({
+      scope: 'Last 128 completed bridge actions; excludes model/client time',
+      totals: { completed: completedActions, sampled: recentActions.length, successful,
+        failed: recentActions.length - successful, sampledSuccessRate: recentActions.length ? successful / recentActions.length : null },
+      actions: recentActions
+    }));
     return;
   }
 

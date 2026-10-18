@@ -7,9 +7,15 @@ test('fast profile favors complete plans while preserving compact and full profi
   const fast = selectToolProfile(tools, compact, 'fast');
   assert.equal(fast.length, 14);
   assert.ok(fast.some(tool => tool.name === 'chrome_workflow'));
+  assert.ok(!fast.some(tool => ['chrome_pipeline', 'chrome_run_macro', 'whatsapp_send_message'].includes(tool.name)));
+  for (const name of ['chrome_parallel_scrape', 'chrome_extract_many', 'chrome_page_fetch_many', 'chrome_api_sequence']) {
+    assert.ok(fast.some(tool => tool.name === name));
+  }
   assert.ok(!fast.some(tool => tool.name === 'chrome_click'));
-  assert.match(fast.find(tool => tool.name === 'chrome_act').description, /all/);
+  assert.match(fast.find(tool => tool.name === 'chrome_act').description, /batch click/);
   assert.equal(selectToolProfile(tools, compact, 'compact').length, 15);
-  assert.equal(selectToolProfile(tools, compact, undefined).length, 16);
+  assert.equal(selectToolProfile(tools, compact, undefined).length, 14);
+  assert.equal(selectToolProfile(tools, compact, 'full').length, 16);
+
   assert.ok(tools.every(tool => tool.description === 'original'));
 });

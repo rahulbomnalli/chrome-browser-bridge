@@ -15,9 +15,10 @@ test('client configs use absolute executable and entry paths', () => {
     const config = JSON.parse(clientConfig(client)).mcpServers['chrome-browser-bridge'];
     assert.equal(config.command, process.execPath);
     assert.ok(path.isAbsolute(config.args[0]));
-    assert.equal(config.env.BRIDGE_TOOL_PROFILE, client === 'antigravity' ? 'fast' : 'compact');
+    assert.equal(config.env.BRIDGE_TOOL_PROFILE, 'fast');
   }
   assert.match(clientConfig('codex'), /tool_timeout_sec = 180/);
+  assert.match(clientConfig('codex'), /BRIDGE_TOOL_PROFILE = "fast"/);
   assert.throws(() => clientConfig('unknown'));
 });
 
@@ -129,13 +130,16 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' });
   assert.equal(init.result.protocolVersion, '2025-06-18');
   assert.match(init.result.instructions, /verify/);
-  assert.match(init.result.instructions, /Do not call status\/snapshot between deterministic steps/);
+  assert.match(init.result.instructions, /reuse fresh snapshots/);
   assert.deepEqual((await rpc('ping')).result, {});
   const list = await rpc('tools/list');
   assert.ok(list.result.tools.some(tool => tool.name === 'chrome_act'));
-  for (const name of ['chrome_workflow', 'chrome_cdp_command', 'chrome_cdp_batch', 'chrome_debug_bundle', 'chrome_api_catalog', 'chrome_api_sequence', 'chrome_run_page_script', 'chrome_page_fetch', 'chrome_page_fetch_many', 'whatsapp_send_message', 'chrome_parallel_scrape', 'chrome_save_macro', 'chrome_run_macro', 'chrome_watch', 'chrome_extract_many']) {
+  for (const name of ['chrome_workflow', 'browser.execute_plan', 'browser.cancel_plan', 'browser.plan_status', 'browser.metrics', 'chrome_cdp_command', 'chrome_cdp_batch', 'chrome_debug_bundle', 'chrome_api_catalog', 'chrome_api_sequence', 'chrome_run_page_script', 'chrome_page_fetch', 'chrome_page_fetch_many', 'whatsapp_send_message', 'chrome_parallel_scrape', 'chrome_save_macro', 'chrome_run_macro', 'chrome_watch', 'chrome_extract_many']) {
     assert.ok(list.result.tools.some(tool => tool.name === name));
   }
+  const executePlanTool = list.result.tools.find(tool => tool.name === 'browser.execute_plan');
+  assert.deepEqual(executePlanTool.inputSchema.required, ['idempotencyKey', 'stages', 'verify']);
+  assert.ok(!executePlanTool.inputSchema.properties.stages.items.properties.action.enum.includes('run_page_script'));
   const fetchTool = list.result.tools.find(tool => tool.name === 'chrome_page_fetch');
   assert.match(fetchTool.description, /Do not guess endpoints/);
   const fetchManyTool = list.result.tools.find(tool => tool.name === 'chrome_page_fetch_many');
@@ -149,7 +153,7 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.match(debugBundleTool.description, /network and console/);
   const apiCatalogTool = list.result.tools.find(tool => tool.name === 'chrome_api_catalog');
   assert.match(apiCatalogTool.description, /never returns cookies/);
-  assert.ok(list.result.tools.length <= 25);
+  assert.ok(list.result.tools.length <= 29);
   assert.equal((await rpc('tools/call', { name: 'chrome_act', arguments: {} })).result.isError, true);
   const failed = await rpc('tools/call', { name: 'chrome_act', arguments: { steps: [{ action: 'click', selector: '#go' }] } });
   assert.equal(failed.result.isError, true);
@@ -185,6 +189,9 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   } });
   assert.equal(extracted.result.isError, false);
   assert.deepEqual(JSON.parse(extracted.result.content[0].text).results.map(item => item.selector), ['h1', 'a']);
+  const metricsCall = await rpc('tools/call', { name: 'browser.metrics', arguments: {} });
+  assert.equal(metricsCall.result.isError, false);
+  assert.match(JSON.parse(metricsCall.result.content[0].text).scope, /model\/client reasoning is unavailable/);
   assert.equal((await rpc('missing')).error.code, -32601);
   assert.ok((await transport.getStatus()).latencyMs.samples >= 20);
   mcp.stdin.end();

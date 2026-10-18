@@ -75,4 +75,10 @@ node cli.js profile
 - Compact JSON remains the wire format. The existing transport already uses keep-alive, TCP no-delay and no WebSocket compression. Adding a binary codec or persistent execution-context IDs was not justified by the measured transport cost; document-pinned continuations avoid stale-context reuse.
 - The bridge cannot force a host model to plan well. Correct schemas, fewer alternatives, concise instructions and local workflow execution reduce avoidable exchanges; unexpected page states still need another decision.
 
+## Task-focused defaults (not tested)
+
+The server now defaults to `fast`, and generated Antigravity, Claude, and Codex configurations select it explicitly. It exposes fifteen task-oriented tools, including parallel URL research, batched extraction/API calls, validated idempotent plans, checkpoints, cancellation and bounded metrics, while removing overlapping pipeline/macro choices; uncommon script, CDP, screenshot and monitoring tools remain available through `compact` or `full`. Initialization guidance and skills prioritize complete local plans and batched operations.
+
+No tests, builds, browser checks, or benchmarks were run for these changes, as requested. Existing clients must regenerate or edit their MCP profile to `fast` and restart/refresh the MCP connection to load the new environment and tool catalog; saved conversations can retain older instructions.
+
 Chrome documents serialized, self-contained injection functions and `injectImmediately` in its [Scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting). Its [Debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger) defines individual command dispatch. Antigravity documents persistent MCP process configuration in its [CLI MCP guide](https://www.antigravity.google/docs/cli/mcp/).

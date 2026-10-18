@@ -24,7 +24,7 @@ Do not produce a plan and stop. Execute the task.
 
 ## 1. Discover Available Tools Once
 
-At the beginning of a session:
+When the client has not already supplied tool schemas:
 
 - Discover the actual available Chrome Browser Bridge MCP tools and their input schemas.
 - Check the bridge connection and available CLI commands only when required.
@@ -84,17 +84,17 @@ Use these rules:
 
 Prefer a single compound tool call for a known sequence of dependent browser actions when the bridge supports that sequence.
 
-Use `chrome_act` for known same-document steps; it injects before `document_idle` and waits for targets. Exact role and name, label, or placeholder targets can be used directly when the request identifies the control; ambiguous matches stop the workflow. If API endpoints are unknown, use `chrome_api_catalog` to summarize loaded resource timings and captured DevTools requests; it redacts likely secrets and omits bodies/auth headers. Resource-only entries may omit method/status. Use `chrome_page_fetch` for one known page-accessible API request and `chrome_page_fetch_many` for up to 20 independent known requests in one concurrent page injection. Use `chrome_api_sequence` for dependent API requests; later calls can refer to earlier JSON values without a model round-trip. Page fetches still obey browser origin/CORS rules; never guess undocumented endpoints. Use `chrome_run_page_script` for task-required asynchronous JavaScript in the page MAIN world, with JSON inputs and bounded output. Treat this as privileged page-context execution; never run unrelated code. Use `chrome_cdp_batch` for up to 20 known ordered DevTools commands in one call; it attaches once, stops on the first error, and returns a completed prefix. Do not parallelize dependent CDP commands. Use `chrome_debug_bundle` to retrieve bounded network and console logs together rather than making two diagnostic calls. `chrome_extract_many` batches known DOM selectors. Use `chrome_pipeline` across navigations or when a step needs a browser-level action. If a target is unknown, use the freshest returned snapshot to identify it before batching. A missing `wait_for_element` target fails the pipeline, so resume from its reported `failedStep`.
+Use `chrome_act` for known same-document steps; it injects before `document_idle` and waits for targets. Exact role and name, label, or placeholder targets can be used directly when the request identifies the control; ambiguous matches stop the workflow. If API endpoints are unknown, use `chrome_api_catalog` to summarize loaded resource timings and captured DevTools requests; it redacts likely secrets and omits bodies/auth headers. Resource-only entries may omit method/status. Use `chrome_page_fetch` for one known page-accessible API request and `chrome_page_fetch_many` for up to 20 independent known requests in one concurrent page injection. Use `chrome_api_sequence` for dependent API requests; later calls can refer to earlier JSON values without a model round-trip. Page fetches still obey browser origin/CORS rules; never guess undocumented endpoints. Use `chrome_run_page_script` for task-required asynchronous JavaScript in the page MAIN world, with JSON inputs and bounded output. Treat this as privileged page-context execution; never run unrelated code. Use `chrome_cdp_batch` for up to 20 known ordered DevTools commands in one call; it attaches once, stops on the first error, and returns a completed prefix. Do not parallelize dependent CDP commands. Use `chrome_debug_bundle` to retrieve bounded network and console logs together rather than making two diagnostic calls. `chrome_extract_many` batches known DOM selectors. Use `chrome_workflow` for known multi-page tasks and local conditional logic; keep dependent browser steps in its ordered stages. Use `chrome_pipeline` only for lower-level sequences that require its specific legacy browser actions. If a target is unknown, use the freshest returned snapshot before batching. On failure, resume from the reported completed prefix without replaying completed submissions.
 
 For a user-requested live monitor, use `chrome_watch` on the smallest reliable message or status selector. Keep the CLI session active, handle each returned change under the user's response rule, and call again while monitoring remains requested. A timeout is a checkpoint, not a new message.
 
-For example, use one form-fill call instead of separate calls for each field. Use one pipeline for navigation-independent preparation, typing, selection, and submission when the pipeline can handle the dependencies correctly.
+For example, use one `chrome_act` for same-page form filling and one `chrome_workflow` for navigation, form actions and final verification when all stages are known.
 
-Do not combine dependent actions blindly. If a later action requires a value or state produced by an earlier action, use a pipeline with supported result handling or make the smallest necessary additional call.
+Do not combine dependent actions blindly. Use workflow value bindings for outputs from earlier stages; if a dependency or target is unknown, inspect only what is needed before continuing.
 
 ## 4. Navigation and Automatic Snapshots
 
-Use `chrome_navigate` or the verified equivalent.
+Use `chrome_workflow` when the destination and follow-up actions are known; use the available navigation tool when discovering a destination.
 
 When navigation returns a URL, title, and compact interactive-element map:
 
@@ -138,7 +138,7 @@ Prefer the native bridge interaction mechanism that reliably produces the intend
 
 ## 6. Batch Execution and Pipelines
 
-For repetitive or multi-step operations, prefer `chrome_pipeline` or the verified equivalent.
+For repetitive or multi-step operations, prefer `chrome_act` for one document or `chrome_workflow` across documents.
 
 Use a batch when:
 

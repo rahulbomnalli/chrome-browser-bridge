@@ -1,4 +1,4 @@
-importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js", "dom-dispatch.js", "state-cache.js");
+importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "plan-executor.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js", "dom-dispatch.js", "state-cache.js");
 // Antigravity Chrome Agent Bridge - Ultra-Fast v4.0 Engine
 const BRIDGE_WS_URL = "ws://127.0.0.1:8765";
 
@@ -20,6 +20,12 @@ const consoleBuffers = new Map();
 const elementCache = new Map();
 const tabCache = createTabCache(chrome.tabs);
 const planCache = createStorageCache(chrome.storage);
+const planExecutor = createPlanExecutor({
+  storage: chrome.storage.local,
+  resolveTab: async tabId => getTargetTab(tabId),
+  validateOrigins: validatePlanOrigins,
+  run: (plan, hooks) => executeWorkflow(plan, { getTargetTab, execute: handleActionInner, ...hooks })
+});
 // O(1) index: requestId -> entry for instant network correlation
 const networkIndexes = new Map();
 
@@ -460,6 +466,49 @@ async function ensureDebuggerAttached(tabId, domains) {
   return true;
 }
 
+async function validatePlanOrigins(tab, plan) {
+  const origins = new Set();
+  const expandUrl = url => {
+    if (typeof url === 'string' && url.includes('{{inputs.')) {
+      return url.replace(/\{\{inputs\.([A-Za-z0-9_.]+)\}\}/g, (_, k) => plan.inputs?.[k] ?? url);
+    }
+    return url;
+  };
+  function add(url, allowInternal = false) {
+    if (!url || url === 'about:blank') return;
+    const resolved = expandUrl(url);
+    if (typeof resolved !== 'string' || resolved.includes('{{')) return; // deferred until runtime binding
+    let parsed;
+    try { parsed = new URL(resolved); } catch { throw new Error('Plan URLs must be absolute HTTP(S) URLs'); }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      if (allowInternal) return;
+      throw new Error(`Plan navigation is not permitted for ${parsed.protocol}`);
+    }
+    origins.add(`${parsed.origin}/*`);
+  }
+  add(tab.url, true);
+  function inspectList(stages) {
+    for (const stage of stages || []) {
+      if (['navigate', 'new_tab'].includes(stage.action)) add(stage.params?.url);
+      if (stage.action === 'if') {
+        inspectList(stage.params?.then);
+        inspectList(stage.params?.else);
+      }
+      if (['for_each', 'while', 'until'].includes(stage.action)) {
+        inspectList(stage.params?.stages);
+      }
+    }
+  }
+  inspectList(plan.stages);
+  if (!origins.size && (plan.stages || []).some(stage => !['navigate', 'new_tab', 'wait_for_user', 'filter', 'aggregate'].includes(stage.action))) {
+    throw new Error('DOM actions require an authorized HTTP(S) page');
+  }
+  if (origins.size && !await chrome.permissions.contains({ origins: [...origins] })) {
+    throw new Error(`Missing host permission for plan origin(s): ${[...origins].join(', ')}`);
+  }
+}
+
+
 async function getTargetTab(tabId) {
   if (tabId) {
     const specifiedTab = await tabCache.get(Number(tabId));
@@ -849,6 +898,15 @@ async function handleAction(action, params) {
 
 async function handleActionInner(action, params) {
   switch (action) {
+    case "execute_plan": {
+      return planExecutor.execute(params);
+    }
+    case "plan_status": {
+      return planExecutor.status(params.idempotencyKey);
+    }
+    case "cancel_plan": {
+      return planExecutor.cancel(params.taskId);
+    }
     case "workflow": {
       let plan = params;
       if (params.name) {
@@ -1234,17 +1292,23 @@ async function handleActionInner(action, params) {
       return typeResult;
     }
 
-    // SMOOTH SCROLL (up / down / element)
+    // FAST SCROLL (up / down / container element)
     case "scroll": {
       const tab = await getTargetTab(params.tabId);
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: (direction, amount) => {
+        func: (direction, amount, selector) => {
           const dy = direction === "up" ? -Math.abs(amount || 400) : Math.abs(amount || 400);
-          window.scrollBy({ top: dy, behavior: "smooth" });
-          return { scrollX: window.scrollX, scrollY: window.scrollY + dy, direction };
+          const target = selector ? document.querySelector(selector) : window;
+          if (!target) throw new Error(`Scroll target not found: ${selector}`);
+          if (target === window) {
+            window.scrollBy({ top: dy, behavior: "instant" });
+            return { scrollX: window.scrollX, scrollY: window.scrollY, direction };
+          }
+          target.scrollTop += dy;
+          return { scrollTop: target.scrollTop, scrollHeight: target.scrollHeight, direction };
         },
-        args: [params.direction || "down", params.amount || 400]
+        args: [params.direction || "down", params.amount || 400, params.selector || null]
       });
       return results[0]?.result || { scrolled: true };
     }
@@ -2160,6 +2224,16 @@ async function handleActionInner(action, params) {
         args: [params]
       });
       return res[0]?.result || { count: 0, data: [] };
+    }
+
+    case "extract_collection": {
+      const tab = await getTargetTab(params.tabId);
+      const res = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: inPageExtractCollection,
+        args: [params]
+      });
+      return res[0]?.result || { count: 0, items: [] };
     }
 
     case "extract_many": {
@@ -3355,6 +3429,34 @@ function inPageExtractMany(queries) {
       }
     })
   };
+}
+
+function inPageExtractCollection(params) {
+  const { selector, fields, limit = 100 } = params;
+  if (!selector) throw new Error("Missing selector for extract_collection");
+  const containers = Array.from(document.querySelectorAll(selector)).slice(0, limit);
+  const items = containers.map(container => {
+    if (!Array.isArray(fields) || !fields.length) {
+      return (container.innerText || container.textContent || '').trim();
+    }
+    const row = {};
+    for (const f of fields) {
+      const name = f.name || f.field;
+      if (!name) continue;
+      const targetEl = f.selector ? container.querySelector(f.selector) : container;
+      if (!targetEl) {
+        row[name] = null;
+        continue;
+      }
+      const attr = f.attribute || 'text';
+      if (attr === 'text') row[name] = (targetEl.innerText || targetEl.textContent || '').trim();
+      else if (attr === 'value') row[name] = targetEl.value !== undefined ? targetEl.value : null;
+      else if (attr === 'html') row[name] = targetEl.outerHTML;
+      else row[name] = targetEl.getAttribute(attr);
+    }
+    return row;
+  });
+  return { selector, count: items.length, items };
 }
 
 // Alarm & Startup listeners
