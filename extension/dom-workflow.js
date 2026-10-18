@@ -6,7 +6,7 @@ async function runDomWorkflow(options) {
   const budget = options.timeoutMs ?? 10000;
   if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 steps');
   if (!Number.isFinite(budget) || budget <= 0 || budget > 600000) throw new Error('Invalid workflow timeout');
-  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload']);
+  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'check', 'uncheck']);
   // Validate the complete plan before performing any mutation.
   for (const step of steps) {
     if (!step || !supported.has(step.action)) throw new Error('Each step needs a supported action');
@@ -111,20 +111,24 @@ async function runDomWorkflow(options) {
     const remaining = budget - (performance.now() - started);
     if (remaining <= 0) throw new Error(`Deadline waiting for ${targetName(step)}`);
     return new Promise((resolvePromise, reject) => {
-      let observer, frame, done = false;
-      const cleanup = () => { done = true; clearTimeout(timer); if (frame !== undefined) cancelAnimationFrame(frame); observer?.disconnect(); };
+      let observer, interval, done = false;
+      const cleanup = () => {
+        done = true;
+        clearTimeout(timer);
+        if (interval !== undefined) clearInterval(interval);
+        observer?.disconnect();
+      };
       const check = () => {
         if (done) return;
         try { const el = resolve(step); if (el) { cleanup(); resolvePromise(el); } }
         catch (error) { cleanup(); reject(error); }
       };
       const timer = setTimeout(() => { cleanup(); reject(new Error(`Deadline waiting for ${targetName(step)}`)); }, remaining);
-      // Mutations wake immediately; frames cover property-only changes and CSS transitions.
-      const onFrame = () => { rootIndex.dirty = true; check(); if (!done) frame = requestAnimationFrame(onFrame); };
-      if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(onFrame);
-      observer = new MutationObserver(check);
+      // Mutations wake immediately; throttled 100ms interval covers property-only changes and CSS transitions without CPU burn.
+      observer = new MutationObserver(() => { rootIndex.dirty = true; check(); });
       observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
       for (const root of rootIndex.roots || []) if (root !== document) observer.observe(root, { childList: true, subtree: true, attributes: true, characterData: true });
+      interval = setInterval(check, 100);
       check();
     });
   }
@@ -151,6 +155,20 @@ async function runDomWorkflow(options) {
           const hit = (root.elementFromPoint ? root : document).elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
           if (!hit || !(hit === el || el.contains(hit))) throw new Error(`Obstructed target: ${targetName(step)}`);
           el.click();
+          break;
+        }
+        case 'check':
+        case 'uncheck': {
+          const shouldCheck = step.action === 'check';
+          if (el instanceof HTMLInputElement && el.type === 'checkbox') {
+            if (el.checked !== shouldCheck) {
+              el.checked = shouldCheck;
+              el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+            }
+          } else {
+            el.click();
+          }
           break;
         }
         case 'type': {
@@ -253,8 +271,8 @@ async function waitForVisibleElement(selector, text, timeoutMs = 10000) {
   const immediate = find();
   if (immediate) return { found: true, elapsedMs: performance.now() - started, tag: immediate.tagName, id: immediate.id };
   return new Promise(resolve => {
-    let observer, frame, done = false;
-    const cleanup = () => { done = true; clearTimeout(timer); if (frame !== undefined) cancelAnimationFrame(frame); observer?.disconnect(); };
+    let observer, interval, done = false;
+    const cleanup = () => { done = true; clearTimeout(timer); if (interval !== undefined) clearInterval(interval); observer?.disconnect(); };
     const check = () => {
       if (done) return;
       const el = find();
@@ -266,11 +284,10 @@ async function waitForVisibleElement(selector, text, timeoutMs = 10000) {
       cleanup();
       resolve({ ok: false, found: false, timeout: true, elapsedMs: performance.now() - started });
     }, timeoutMs);
-    // CSS transitions and property-only updates do not always emit mutations.
-    const onFrame = () => { check(); if (!done) frame = requestAnimationFrame(onFrame); };
-    if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(onFrame);
+    // Mutations wake immediately; throttled 100ms interval checks for CSS/property updates.
     observer = new MutationObserver(check);
     observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+    interval = setInterval(check, 100);
     check();
   });
 }

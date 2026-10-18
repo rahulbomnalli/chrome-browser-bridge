@@ -60,7 +60,20 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.equal((await transport.getStatus()).connected, false);
   const forbidden = await fetch(`${url}/action`, { method: 'POST', headers: { Origin: 'https://malicious.example' } });
   assert.equal(forbidden.status, 403);
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+
+  // Security test: unauthorized /action POST without bearer token returns 401
+  const unauthorized = await fetch(`${url}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'chrome-extension://mock-extension-id' },
+    body: JSON.stringify({ action: 'echo', params: {} })
+  });
+  assert.equal(unauthorized.status, 401);
+
+  const { getAuthToken } = require('../lib/token');
+  const token = getAuthToken();
+  const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`, {
+    headers: { Origin: 'chrome-extension://mock-extension-id' }
+  });
   await once(ws, 'open');
   t.after(() => ws.terminate());
   ws.on('message', raw => {
@@ -79,7 +92,9 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   // Replacement sockets cannot resolve another connection's pending request.
   const held = transport.postAction('hold');
   await once(ws, 'message');
-  const replacement = new WebSocket(`ws://127.0.0.1:${port}`);
+  const replacement = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`, {
+    headers: { Origin: 'chrome-extension://mock-extension-id' }
+  });
   await once(replacement, 'open');
   t.after(() => replacement.terminate());
   replacement.on('message', raw => {
@@ -94,7 +109,9 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.deepEqual(await newerPending, { replacement: true });
   replacement.close();
   await once(replacement, 'close');
-  const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
+  const ws2 = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`, {
+    headers: { Origin: 'chrome-extension://mock-extension-id' }
+  });
   await once(ws2, 'open');
   t.after(() => ws2.terminate());
   ws2.on('message', raw => {

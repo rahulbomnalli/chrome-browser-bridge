@@ -127,7 +127,8 @@ test('universal engine: repeated list processing across extracted collection', a
         action: 'for_each',
         params: {
           items: '{{results.catalog.items}}',
-          as: 'row',
+          itemAs: 'row',
+          maxIterations: 10,
           stages: [
             {
               id: 'click_row',
@@ -152,7 +153,7 @@ test('universal engine: repeated list processing across extracted collection', a
           items: [{ id: '101' }, { id: '102' }, { id: '103' }]
         };
       }
-      if (action === 'act') {
+      if (action === 'act' && params.steps?.[0]?.action !== 'assert') {
         processedItems.push(params.steps[0].selector);
         return { ok: true };
       }
@@ -162,7 +163,7 @@ test('universal engine: repeated list processing across extracted collection', a
 
   assert.equal(result.ok, true);
   assert.deepEqual(processedItems, ['#item-101', '#item-102', '#item-103']);
-  assert.equal(result.results.process_each.iterations, 3);
+  assert.equal(result.results.process_each.iterations.length, 3);
 });
 
 // 4. Paginated Tables with until loop
@@ -182,7 +183,7 @@ test('universal engine: paginated table scraping with until condition', async ()
             {
               id: 'scrape_page',
               action: 'extract_collection',
-              params: { itemSelector: 'table tr.data', fields: { val: 'td' } }
+              params: { selector: 'table tr.data', fields: [{ name: 'val', selector: 'td' }] }
             },
             {
               id: 'next_page',
@@ -217,7 +218,7 @@ test('universal engine: paginated table scraping with until condition', async ()
 
   assert.equal(result.ok, true);
   assert.deepEqual(scrapedPages, ['page-1', 'page-2']);
-  assert.equal(result.results.paginate_table.iterations, 2);
+  assert.equal(result.results.paginate_table.iterations.length, 2);
 });
 
 // 5. Dynamic Forms with Multi-field Submission and Verification
@@ -250,7 +251,7 @@ test('universal engine: dynamic form filling and submission', async () => {
     getTargetTab: async () => ({ id: 20 }),
     execute: async (action, params) => {
       if (action === 'act') {
-        submittedFields.push(...params.steps.map(s => s.action));
+        submittedFields.push(...params.steps.filter(s => s.action !== 'assert').map(s => s.action));
         return { ok: true, completed: 4 };
       }
       if (action === 'workflow_condition') return { matches: true };
@@ -277,7 +278,7 @@ test('universal engine: file download and file upload stages', async () => {
         id: 'upload_asset',
         action: 'act',
         params: {
-          steps: [{ action: 'upload', selector: '#file-picker', value: 'C:\\data\\sample.pdf' }]
+          steps: [{ action: 'upload', selector: '#file-picker', files: [{ name: 'sample.pdf', text: 'PDF data' }] }]
         }
       }
     ],
@@ -408,8 +409,9 @@ test('universal engine: cancellation halts execution cleanly between stages', as
             cancelTrigger();
           }
           return { ok: true };
-        }
-      }, { shouldCancel: hooks.shouldCancel });
+        },
+        shouldCancel: hooks.shouldCancel
+      });
     }
   });
 
@@ -480,11 +482,12 @@ test('universal engine: duplicate idempotent submission never replays side-effec
     run: async (planParams, hooks) => {
       return executeWorkflow(planParams, {
         getTargetTab: async () => ({ id: 70 }),
-        execute: async (action) => {
-          if (action === 'act') mutationCount++;
+        execute: async (action, params) => {
+          if (action === 'act' && params?.steps?.[0]?.action !== 'assert') mutationCount++;
           return { ok: true };
-        }
-      }, { onCheckpoint: hooks.onCheckpoint });
+        },
+        onCheckpoint: hooks.onCheckpoint
+      });
     }
   });
 

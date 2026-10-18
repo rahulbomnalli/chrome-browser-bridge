@@ -19,6 +19,14 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dom-workflow.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
   "side_panel": {
     "default_path": "sidepanel.html"
   },

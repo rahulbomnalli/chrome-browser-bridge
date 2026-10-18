@@ -1,4 +1,5 @@
 importScripts("dom-workflow.js", "pipeline.js", "workflow.js", "plan-executor.js", "page-api.js", "cdp-batch.js", "debug-bundle.js", "api-catalog.js", "dom-dispatch.js", "state-cache.js");
+try { importScripts("bridge-token.js"); } catch (_) {}
 // Antigravity Chrome Agent Bridge - Ultra-Fast v4.0 Engine
 const BRIDGE_WS_URL = "ws://127.0.0.1:8765";
 
@@ -241,23 +242,26 @@ function connectToBridge() {
   }
 
   try {
-    socket = new WebSocket(BRIDGE_WS_URL);
+    const token = (typeof self !== 'undefined' && self.__BRIDGE_TOKEN) || '';
+    const wsUrl = token ? `${BRIDGE_WS_URL}?token=${encodeURIComponent(token)}` : BRIDGE_WS_URL;
+    socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-      console.log("[Chrome Bridge v3.0] Ultra-Fast Engine Connected.");
-      updateBadge(true);
-      startHeartbeat();
+      console.log("[Chrome Bridge v3.0] WebSocket connected.");
       reconnectAttempts = 0;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
-      socket.send(JSON.stringify({
-        type: "hello",
-        client: "chrome-extension-v3",
-        version: "3.0.0",
-        features: ["token_compression", "pipeline", "native_cdp", "network", "console", "storage"]
-      }));
+      if (token) {
+        socket.send(JSON.stringify({
+          type: "auth",
+          client: "chrome-extension-v3",
+          version: "3.0.0",
+          extensionId: chrome.runtime?.id || "chrome-extension",
+          token
+        }));
+      }
     };
 
     socket.onmessage = async (event) => {
@@ -272,6 +276,26 @@ function connectToBridge() {
       }
 
       if (data.type === "pong") return;
+
+      if (data.type === "challenge") {
+        const token = (typeof self !== 'undefined' && self.__BRIDGE_TOKEN) || '';
+        socket.send(JSON.stringify({
+          type: "auth",
+          client: "chrome-extension-v3",
+          version: "3.0.0",
+          extensionId: chrome.runtime?.id || "chrome-extension",
+          nonce: data.nonce,
+          token
+        }));
+        return;
+      }
+
+      if (data.type === "auth_ok") {
+        console.log(`[Chrome Bridge v3.0] Authenticated session #${data.sessionGeneration} established.`);
+        updateBadge(true);
+        startHeartbeat();
+        return;
+      }
 
       const { id, action, params = {} } = data;
       if (!action) return;
@@ -323,9 +347,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   // Fast method dispatch via first char discrimination
   const c0 = method.charCodeAt(0); // P=80, N=78, R=82, C=67
 
-  // Page domain (P)
+  // Page domain (P) — Explicit dialog policy handling (safe dismiss default)
   if (c0 === 80 && method === "Page.javascriptDialogOpening") {
-    chrome.debugger.sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+    const policy = (typeof tabDialogPolicies !== 'undefined' && tabDialogPolicies.get(tabId)) || (typeof globalDialogPolicy !== 'undefined' ? globalDialogPolicy : 'dismiss');
+    const accept = policy === 'accept';
+    chrome.debugger.sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept }).catch(() => {});
     return;
   }
 
@@ -928,6 +954,10 @@ async function handleActionInner(action, params) {
     }
     case "workflow_condition": {
       const tab = await getTargetTab(params.tabId);
+      try {
+        const resp = await chrome.tabs.sendMessage(tab.id, { type: 'check_condition', condition: params });
+        if (resp && resp.ok && resp.result) return resp.result;
+      } catch (_) {}
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id }, func: checkWorkflowCondition, injectImmediately: true, args: [params]
       });
@@ -938,10 +968,18 @@ async function handleActionInner(action, params) {
       const tab = await getTargetTab(params.tabId);
       return executeDomAction(params, {
         tabId: tab.id,
-        inject: (options, documentId) => chrome.scripting.executeScript({
-          target: { tabId: tab.id, ...(documentId ? { documentIds: [documentId] } : {}) },
-          func: runDomWorkflow, injectImmediately: true, args: [options]
-        }),
+        inject: async (options, documentId) => {
+          if (!documentId) {
+            try {
+              const resp = await chrome.tabs.sendMessage(tab.id, { type: 'run_dom_workflow', options });
+              if (resp && resp.ok !== undefined) return [{ result: resp }];
+            } catch (_) {}
+          }
+          return chrome.scripting.executeScript({
+            target: { tabId: tab.id, ...(documentId ? { documentIds: [documentId] } : {}) },
+            func: runDomWorkflow, injectImmediately: true, args: [options]
+          });
+        },
         insertText: async (text, state) => {
           await ensureDebuggerAttached(tab.id);
           await chrome.scripting.executeScript({

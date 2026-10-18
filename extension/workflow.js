@@ -3,7 +3,7 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
   const actions = new Set([
     'navigate', 'new_tab', 'switch_tab', 'close_tab',
     'act', 'wait_for_element', 'extract_data', 'extract_collection',
-    'scroll', 'download', 'read_page', 'native_click', 'wait_for_user',
+    'scroll', 'download', 'read_page', 'native_click', 'wait_for_user', 'checkpoint',
     'if', 'for_each', 'while', 'until', 'filter', 'aggregate', 'assert'
   ]);
   const stages = plan.stages;
@@ -33,14 +33,15 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
         act: ['steps', 'tabId', 'timeoutMs'],
         wait_for_element: ['selector', 'text', 'tabId', 'timeoutMs'],
         extract_data: ['selector', 'attribute', 'multiple', 'limit', 'tabId'],
-        extract_collection: ['selector', 'fields', 'limit', 'tabId'],
+        extract_collection: ['selector', 'itemSelector', 'fields', 'limit', 'tabId'],
         scroll: ['direction', 'amount', 'selector', 'tabId'],
         download: ['url', 'filename', 'conflictAction'],
         read_page: ['tabId', 'maxLength', 'maxChars'],
         native_click: ['selector', 'target', 'x', 'y', 'tabId'],
         wait_for_user: ['reason', 'timeoutSec', 'tabId'],
+        checkpoint: ['reason', 'timeoutSec', 'tabId'],
         if: ['condition', 'then', 'else'],
-        for_each: ['items', 'itemAs', 'maxIterations', 'stages'],
+        for_each: ['items', 'itemAs', 'as', 'maxIterations', 'stages'],
         while: ['condition', 'maxIterations', 'stages'],
         until: ['condition', 'maxIterations', 'stages'],
         filter: ['items', 'field', 'operator', 'value'],
@@ -51,9 +52,18 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
       if (['navigate', 'new_tab'].includes(stage.action) && typeof stage.params.url !== 'string') throw new Error(`${stage.action} requires a URL`);
       if (stage.action === 'download' && typeof stage.params.url !== 'string') throw new Error('download requires a URL');
       if (stage.action === 'extract_collection') {
-        if (typeof stage.params.selector !== 'string' || !stage.params.selector) throw new Error('extract_collection requires a container selector');
-        if (stage.params.fields !== undefined && (!Array.isArray(stage.params.fields) || !stage.params.fields.length || stage.params.fields.length > 50)) {
-          throw new Error('extract_collection fields must be an array of 1 to 50 field definitions');
+        const sel = stage.params.selector || stage.params.itemSelector;
+        if (typeof sel !== 'string' || !sel) throw new Error('extract_collection requires a container selector');
+        if (stage.params.fields !== undefined) {
+          if (typeof stage.params.fields === 'object' && !Array.isArray(stage.params.fields)) {
+            stage.params.fields = Object.entries(stage.params.fields).map(([name, def]) => {
+              if (typeof def === 'string') return { name, selector: def, attribute: 'text' };
+              return { name, selector: def.selector, attribute: def.attribute || 'text' };
+            });
+          }
+          if (!Array.isArray(stage.params.fields) || !stage.params.fields.length || stage.params.fields.length > 50) {
+            throw new Error('extract_collection fields must be an array of 1 to 50 field definitions');
+          }
         }
       }
       if (stage.action === 'scroll') {
@@ -75,6 +85,8 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
         }
       }
       if (stage.action === 'for_each') {
+        stage.params.itemAs = stage.params.itemAs || stage.params.as || 'item';
+        if (stage.params.maxIterations === undefined) stage.params.maxIterations = 50;
         if (typeof stage.params.items !== 'string' || typeof stage.params.itemAs !== 'string' ||
             !/^[A-Za-z][A-Za-z0-9_]*$/.test(stage.params.itemAs) || !Number.isInteger(stage.params.maxIterations) ||
             stage.params.maxIterations < 1 || stage.params.maxIterations > 100) throw new Error('for_each requires items, itemAs, and maxIterations from 1 to 100');
@@ -114,7 +126,7 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
   function validateTargets(steps, verification) {
     if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 DOM steps');
     for (const step of steps) {
-      if (!step || (verification ? step.action !== undefined && step.action !== 'assert' : !['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload'].includes(step.action))) throw new Error('Invalid DOM action; verify only permits assertions');
+      if (!step || (verification ? step.action !== undefined && step.action !== 'assert' : !['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'check', 'uncheck'].includes(step.action))) throw new Error('Invalid DOM action; verify only permits assertions');
       const fields = ['action', 'selector', 'role', 'name', 'label', 'placeholder', 'value', 'text', 'equals', 'attribute', 'trusted', 'files'];
       for (const key of Object.keys(step)) if (!fields.includes(key)) throw new Error(`Unsupported DOM step field: ${key}`);
       const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
@@ -137,7 +149,17 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
     return Math.max(1, Math.floor(value));
   }
   function resolveReference(root, key, variables, scope = results) {
-    let found = root === 'inputs' ? plan.inputs : root === 'vars' ? variables : scope;
+    let found;
+    if (root === 'inputs') found = plan.inputs;
+    else if (root === 'vars') found = variables;
+    else if (root === 'results') found = scope;
+    else if (variables && Object.prototype.hasOwnProperty.call(variables, root)) {
+      found = variables[root];
+    } else if (scope && Object.prototype.hasOwnProperty.call(scope, root)) {
+      found = scope[root];
+    } else {
+      throw new Error(`Unresolved workflow value: ${root}.${key}`);
+    }
     const parts = key.replace(/\[(\d+)\]/g, '.$1').split('.');
     for (const part of parts) {
       if (['__proto__', 'constructor', 'prototype'].includes(part) || found == null) {
@@ -159,11 +181,11 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
   }
   function expand(value, variables = {}, scope = results) {
     if (typeof value === 'string') {
-      const direct = value.match(/^\{\{(inputs|results|vars)\.([A-Za-z0-9_.\[\]]+)\}\}$/);
+      const direct = value.match(/^\{\{(inputs|results|vars|[A-Za-z0-9_]+)\.([A-Za-z0-9_.\[\]]+)\}\}$/);
       if (direct) {
         return resolveReference(direct[1], direct[2], variables, scope);
       }
-      return value.replace(/\{\{(inputs|results|vars)\.([A-Za-z0-9_.\[\]]+)\}\}/g, (_, root, key) => {
+      return value.replace(/\{\{(inputs|results|vars|[A-Za-z0-9_]+)\.([A-Za-z0-9_.\[\]]+)\}\}/g, (_, root, key) => {
         const found = resolveReference(root, key, variables, scope);
         if (!['string', 'number', 'boolean'].includes(typeof found)) throw new Error('Interpolated workflow values must be strings, numbers or booleans');
         return String(found);
@@ -305,6 +327,12 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
           await run('act', { steps: expand(stage.params.steps, variables, localResults).map(s => ({ ...s, action: 'assert' })) });
         }
         result = { ok: true, asserted: true };
+      } else if (stage.action === 'extract_collection') {
+        const p = expand(stage.params, variables, localResults);
+        p.selector = p.selector || p.itemSelector;
+        result = await run('extract_collection', p);
+      } else if (stage.action === 'checkpoint') {
+        result = await run('checkpoint', expand(stage.params, variables, localResults));
       } else if (stage.action === 'switch_tab') {
         result = await run('switch_tab', expand(stage.params, variables, localResults));
         tabId = result?.tabId ?? result?.id ?? stage.params.tabId ?? tabId;
@@ -313,7 +341,18 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
       } else if (stage.action === 'download') {
         result = await run('download_file', expand(stage.params, variables, localResults));
       } else {
-        result = await run(stage.action, expand(stage.params, variables, localResults));
+        const expandedParams = expand(stage.params, variables, localResults);
+        if (['navigate', 'new_tab'].includes(stage.action) && Array.isArray(plan.allowedOrigins) && plan.allowedOrigins.length > 0) {
+          try {
+            const origin = new URL(expandedParams.url).origin;
+            if (!plan.allowedOrigins.includes(origin)) {
+              throw new Error(`Navigation to origin ${origin} is not allowed by plan policy`);
+            }
+          } catch (e) {
+            throw new Error(`Disallowed origin or invalid URL: ${e.message}`);
+          }
+        }
+        result = await run(stage.action, expandedParams);
         if (['navigate', 'new_tab'].includes(stage.action)) tabId = result?.tabId ?? result?.id ?? tabId;
       }
       localResults[stage.id] = result;
@@ -336,16 +375,57 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
     return { ok: true, verified: true, tabId, completed: progress.length, progress, results, verification,
       durationMs: performance.now() - started, metrics: { extensionActions: trace.length, retries: 0, actions: trace } };
   } catch (error) {
-    if (error.cancelled) return { ok: false, verified: false, cancelled: true, tabId, failedStage,
+    let code = 'INTERNAL_ERROR';
+    let retrySafe = false;
+    let outcomeKnown = false;
+    let suggestedRecovery = 'Inspect failedResult for completed DOM steps. Resume only uncompleted actions; never replay a completed submission.';
+
+    const msg = String(error.message || '');
+    if (error.cancelled) {
+      code = 'CANCELLED'; retrySafe = false; outcomeKnown = true;
+      suggestedRecovery = 'Workflow was aborted by client; resume only uncompleted stages.';
+    } else if (failedStage === '$verify') {
+      code = 'VERIFY_FAILED'; retrySafe = false; outcomeKnown = true;
+      suggestedRecovery = 'Workflow stages executed but postcondition assertion failed; inspect DOM snapshot.';
+    } else if (/deadline|timeout|timed out/i.test(msg)) {
+      code = 'DEADLINE_EXCEEDED'; retrySafe = false; outcomeKnown = false;
+      suggestedRecovery = 'Execution exceeded budget; inspect page state to check whether mutation succeeded.';
+    } else if (/not found|missing element|no element/i.test(msg)) {
+      code = 'ELEMENT_MISSING'; retrySafe = true; outcomeKnown = true;
+      suggestedRecovery = 'Refresh DOM snapshot or wait on observable condition before re-locating element.';
+    } else if (/ambiguous|multiple elements/i.test(msg)) {
+      code = 'AMBIGUOUS_LOCATOR'; retrySafe = true; outcomeKnown = true;
+      suggestedRecovery = 'Use a more specific selector, role, name, or index target.';
+    } else if (/obstruct|intercepted|not visible/i.test(msg)) {
+      code = 'OBSTRUCTED'; retrySafe = true; outcomeKnown = true;
+      suggestedRecovery = 'Wait for modal or overlay to clear, scroll target into view, or use trusted input.';
+    } else if (/stale|detached|context destroyed/i.test(msg)) {
+      code = 'STALE_DOCUMENT'; retrySafe = true; outcomeKnown = true;
+      suggestedRecovery = 'Document reference expired during execution; re-resolve target on current document.';
+    } else if (/auth|password|login|2fa|checkpoint/i.test(msg)) {
+      code = 'AUTH_REQUIRED'; retrySafe = false; outcomeKnown = false;
+      suggestedRecovery = 'Trigger chrome_wait_for_user in-tab checkpoint for credentials or 2FA resolution.';
+    } else if (/origin|permission|unauthorized|forbidden/i.test(msg)) {
+      code = 'PERMISSION_DENIED'; retrySafe = false; outcomeKnown = true;
+      suggestedRecovery = 'Verify allowedOrigins policy or prompt user for origin permission.';
+    } else if (/invalid plan|unsupported|schema/i.test(msg)) {
+      code = 'INVALID_PLAN'; retrySafe = false; outcomeKnown = true;
+      suggestedRecovery = 'Validate workflow declaration against the schema before resubmitting.';
+    }
+
+    if (error.cancelled) return { ok: false, verified: false, cancelled: true, tabId, failedStage, stageId: failedStage,
+      code, retrySafe, outcomeKnown, suggestedRecovery,
       completed: progress.length, progress, results, error: error.message, durationMs: performance.now() - started,
       metrics: { extensionActions: trace.length, retries: 0, actions: trace } };
     // Report partial DOM progress. The caller must never replay a completed send/submit.
     const failedResult = currentResult;
     let snapshot = null;
     try { snapshot = (await execute('snap', { tabId })).compact; } catch {}
-    return { ok: false, verified: false, tabId, failedStage, completed: progress.length, progress, results,
+    return { ok: false, verified: false, tabId, failedStage, stageId: failedStage,
+      code, retrySafe, outcomeKnown, suggestedRecovery,
+      completed: progress.length, progress, results,
       failedResult, error: error.message, snapshot,
-      recovery: 'Inspect failedResult for completed DOM steps. Resume only uncompleted actions; never replay a completed submission.',
+      recovery: suggestedRecovery,
       durationMs: performance.now() - started, metrics: { extensionActions: trace.length, retries: 0, actions: trace } };
   }
 }

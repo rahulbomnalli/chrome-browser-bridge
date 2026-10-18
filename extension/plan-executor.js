@@ -26,7 +26,10 @@ function createPlanExecutor({ storage, resolveTab, validateOrigins, run }) {
         throw new Error('Plan journal is full; completed idempotency records are retained for seven days');
       }
       journal[key] = { ...journal[key], ...update, idempotencyKey: key };
-      await storage.set({ [PLAN_JOURNAL_KEY]: journal });
+      await storage.set({
+        [PLAN_JOURNAL_KEY]: journal,
+        [`bridge_task:${key}`]: journal[key]
+      });
     });
     journalTail = operation.catch(() => {});
     return operation;
@@ -80,6 +83,7 @@ function createPlanExecutor({ storage, resolveTab, validateOrigins, run }) {
     const previous = journal[key];
     if (previous) {
       if (previous.fingerprint !== fingerprint || previous.taskId !== taskId) throw new Error('idempotencyKey is already bound to a different plan');
+      const isUncertain = ['running', 'queued', 'uncertain'].includes(previous.state);
       return {
         ok: previous.state === 'completed',
         verified: previous.state === 'completed',
@@ -87,77 +91,116 @@ function createPlanExecutor({ storage, resolveTab, validateOrigins, run }) {
         taskId,
         state: previous.state,
         checkpoint: previous.checkpoint,
-        ...(previous.state === 'running' || previous.state === 'queued' || previous.state === 'uncertain'
-          ? { error: 'Task outcome is uncertain after executor restart; inspect the page before creating a new plan' } : {})
+        completedStages: previous.checkpoint?.completedStages || (previous.checkpoint?.stageId ? [previous.checkpoint.stageId] : []),
+        ...(isUncertain
+          ? {
+              code: 'MUTATION_UNCERTAIN',
+              retrySafe: false,
+              outcomeKnown: false,
+              error: 'Task outcome is uncertain after executor restart; inspect the page before creating a new plan',
+              suggestedRecovery: 'Inspect current tab DOM to verify whether partial actions completed. Never replay uncertain mutations.'
+            } : {})
       };
     }
 
     const tab = await resolveTab(plan.tabId);
     await validateOrigins(tab, plan);
     const tabId = tab.id;
-    if (!queues.has(tabId)) {
-      const activeCheckpoint = Object.values(journal).find(entry =>
-        entry.tabId === tabId && ['queued', 'running'].includes(entry.state));
-      if (activeCheckpoint) {
-        throw new Error(`Tab has an unfinished plan (${activeCheckpoint.taskId}); inspect its status before starting another plan`);
+
+    // Collect all unique tabs targeted by this plan and sort in ascending order to prevent deadlocks
+    const targetTabs = [tabId];
+    if (Array.isArray(plan.stages)) {
+      for (const stage of plan.stages) {
+        if (stage?.params?.tabId !== undefined && stage.params.tabId !== null && !targetTabs.includes(stage.params.tabId)) {
+          targetTabs.push(stage.params.tabId);
+        }
+      }
+    }
+    targetTabs.sort((a, b) => a - b);
+
+    for (const tId of targetTabs) {
+      if (!queues.has(tId)) {
+        const activeCheckpoint = Object.values(journal).find(entry =>
+          entry.tabId === tId && ['queued', 'running'].includes(entry.state));
+        if (activeCheckpoint) {
+          throw new Error(`Tab has an unfinished plan (${activeCheckpoint.taskId}); inspect its status before starting another plan`);
+        }
       }
     }
     if (active.has(taskId)) throw new Error('taskId is already active');
     const controller = { taskId, key, cancelled: false, state: 'queued' };
     active.set(taskId, controller);
-    const predecessor = queues.get(tabId) || Promise.resolve();
+
+    // Multi-tab predecessor chain in ordered sequence
+    const predecessors = targetTabs.map(tId => queues.get(tId) || Promise.resolve());
     let releaseQueue;
     const queueTail = new Promise(resolve => { releaseQueue = resolve; });
-    queues.set(tabId, queueTail);
+    for (const tId of targetTabs) {
+      queues.set(tId, queueTail);
+    }
+
+    function cleanupQueues() {
+      releaseQueue();
+      for (const tId of targetTabs) {
+        if (queues.get(tId) === queueTail) queues.delete(tId);
+      }
+    }
 
     try {
       await updateJournal(key, {
         taskId, fingerprint, tabId, state: 'queued',
-        checkpoint: { state: 'queued', stageId: null }, updatedAt: Date.now()
+        checkpoint: { state: 'queued', stageId: null, completedStages: [] }, updatedAt: Date.now()
       });
     } catch (error) {
       active.delete(taskId);
-      releaseQueue();
-      if (queues.get(tabId) === queueTail) queues.delete(tabId);
+      cleanupQueues();
       throw new Error(`Cannot persist plan checkpoint before execution: ${error.message}`);
     }
 
     const started = performance.now();
-    await predecessor.catch(() => {});
+    await Promise.all(predecessors.map(p => p.catch(() => {})));
     if (controller.cancelled) {
       const result = { ok: false, cancelled: true, taskId, error: 'Cancelled before execution' };
       await updateJournal(key, {
-        state: 'cancelled', checkpoint: { state: 'cancelled', stageId: null }, updatedAt: Date.now()
+        state: 'cancelled', checkpoint: { state: 'cancelled', stageId: null, completedStages: [] }, updatedAt: Date.now()
       });
       active.delete(taskId);
-      releaseQueue();
-      if (queues.get(tabId) === queueTail) queues.delete(tabId);
+      cleanupQueues();
       return result;
     }
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
       const result = { ok: false, taskId, error: 'Plan deadline exceeded while waiting for its tab queue' };
-      await updateJournal(key, { state: 'expired', checkpoint: { state: 'expired', stageId: null }, updatedAt: Date.now() });
+      await updateJournal(key, { state: 'expired', checkpoint: { state: 'expired', stageId: null, completedStages: [] }, updatedAt: Date.now() });
       active.delete(taskId);
-      releaseQueue();
-      if (queues.get(tabId) === queueTail) queues.delete(tabId);
+      cleanupQueues();
       return result;
     }
 
     controller.state = 'running';
-    let checkpoint = { state: 'started', stageId: null };
+    let checkpoint = { state: 'started', stageId: null, completedStages: [] };
+    const completedStages = [];
     try {
       await updateJournal(key, { state: 'running', checkpoint, updatedAt: Date.now() });
       const result = await run({ ...plan, idempotencyKey: key, taskId, timeoutMs: remaining }, {
         shouldCancel: () => controller.cancelled,
         onCheckpoint: next => {
-          checkpoint = next;
-          return updateJournal(key, { state: 'running', checkpoint: next, updatedAt: Date.now() });
+          if (next.stageId && (next.state === 'completed' || next.ok) && !completedStages.includes(next.stageId)) {
+            completedStages.push(next.stageId);
+          }
+          checkpoint = { ...next, completedStages: [...completedStages] };
+          const isMutation = next.intent === true || ['click', 'type', 'select', 'upload', 'press', 'check', 'uncheck', 'native_click', 'act'].includes(next.action);
+          const isTerminal = ['completed', 'failed', 'verified', 'uncertain', 'cancelled', 'expired'].includes(next.state);
+          if (isMutation || isTerminal) {
+            return updateJournal(key, { state: 'running', checkpoint, updatedAt: Date.now() });
+          }
+          return Promise.resolve();
         }
       });
       const state = result.cancelled ? 'cancelled' : result.ok ? 'completed' : 'failed';
       await updateJournal(key, {
-        state, checkpoint: { ...checkpoint, state, failedStage: result.failedStage ?? null, completed: result.completed ?? 0 },
+        state,
+        checkpoint: { ...checkpoint, state, failedStage: result.failedStage ?? null, completed: result.completed ?? completedStages.length, completedStages },
         updatedAt: Date.now()
       });
       return {
@@ -169,13 +212,12 @@ function createPlanExecutor({ storage, resolveTab, validateOrigins, run }) {
     } catch (error) {
       const state = checkpoint.stageId ? 'uncertain' : 'failed';
       await updateJournal(key, {
-        state, checkpoint: { ...checkpoint, state, error: error.message }, updatedAt: Date.now()
+        state, checkpoint: { ...checkpoint, state, error: error.message, completedStages }, updatedAt: Date.now()
       });
       throw error;
     } finally {
       active.delete(taskId);
-      releaseQueue();
-      if (queues.get(tabId) === queueTail) queues.delete(tabId);
+      cleanupQueues();
     }
   }
 
