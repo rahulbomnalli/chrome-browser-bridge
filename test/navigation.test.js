@@ -29,3 +29,32 @@ test('page load wait cannot miss completion during the status lookup', async () 
   ]);
   assert.equal(removed, true);
 });
+
+test('waitForPageLoad ignores complete status from previous URL when targetUrl is specified', async () => {
+  let listener;
+  let resolvedEarly = false;
+  const chrome = { tabs: {
+    onUpdated: {
+      addListener(callback) { listener = callback; },
+      removeListener() {}
+    },
+    get() {
+      // Tab is currently 'complete' but at old URL
+      return Promise.resolve({ status: 'complete', url: 'https://example.com/old' });
+    }
+  } };
+  const waitForPageLoad = vm.runInNewContext(`${waitSource}\nwaitForPageLoad`, { chrome, setTimeout, clearTimeout, URL });
+  
+  const waitPromise = waitForPageLoad(42, 500, 'https://example.com/new').then(() => {
+    resolvedEarly = true;
+  });
+
+  // Give microtasks time to run
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(resolvedEarly, false, 'Should not resolve from old URL complete status');
+
+  // Now emit complete for new URL
+  listener(42, { status: 'complete', url: 'https://example.com/new' }, { url: 'https://example.com/new' });
+  await waitPromise;
+  assert.equal(resolvedEarly, true, 'Should resolve once new URL completes');
+});

@@ -717,6 +717,7 @@ async function handleToolCall(name, args) {
   switch (name) {
     case 'chrome_workflow': return toolData(await postAction('workflow', args));
     case 'chrome_act': return toolData(await postAction('act', args));
+    case 'browser.execute_workflow': return toolData(await postAction('workflow', args));
     case 'browser.execute_plan': return toolData(await postAction('execute_plan', args));
     case 'browser.cancel_plan': return toolData(await postAction('cancel_plan', args));
     case 'browser.plan_status': return toolData(await postAction('plan_status', args));
@@ -1081,12 +1082,14 @@ async function handleToolCall(name, args) {
 }
 
 const executePlanSchema = structuredClone(TOOLS.find(tool => tool.name === 'chrome_workflow').inputSchema);
+const executeWorkflowSchema = structuredClone(TOOLS.find(tool => tool.name === 'chrome_workflow').inputSchema);
 delete executePlanSchema.properties.name;
 delete executePlanSchema.properties.saveAs;
 executePlanSchema.properties.idempotencyKey = { type: 'string', minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$', description: 'Stable caller-generated key. Reusing it never replays a completed or uncertain task.' };
 executePlanSchema.properties.taskId = { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$', description: 'Optional cancellation/status handle; defaults to idempotencyKey.' };
 executePlanSchema.required = ['idempotencyKey', 'stages', 'verify'];
 TOOLS.push(
+  { name: 'browser.execute_workflow', description: 'Universal high-level browser workflow engine: execute complex browser tasks in one call with ordered navigation, branching, bounded loops, forms, content extraction, dynamic page waits, final verification, and typed failure recovery.', inputSchema: executeWorkflowSchema },
   { name: 'browser.execute_plan', description: 'Execute a bounded, schema-validated browser plan locally with per-tab serialization, idempotency, permission checks, persistent checkpoints and no automatic retries. Use one complete plan; inspect status after uncertain interruption.', inputSchema: executePlanSchema },
   { name: 'browser.cancel_plan', description: 'Request cancellation of an active browser plan at its next stage boundary. Does not interrupt an in-flight mutation.', inputSchema: {
     type: 'object', properties: { taskId: { type: 'string', minLength: 1, maxLength: 128 } }, required: ['taskId'], additionalProperties: false
@@ -1099,7 +1102,7 @@ TOOLS.push(
   } }
 );
 const COMPACT_TOOLS = new Set(['chrome_status', 'chrome_list_tabs', 'chrome_smart_navigate',
-  'chrome_snap', 'chrome_act', 'chrome_workflow', 'chrome_pipeline', 'chrome_extract_many', 'chrome_page_fetch', 'chrome_page_fetch_many', 'chrome_api_sequence', 'chrome_api_catalog', 'chrome_run_page_script', 'chrome_evaluate', 'chrome_cdp_command', 'chrome_cdp_batch', 'chrome_debug_bundle',
+  'chrome_snap', 'chrome_act', 'chrome_workflow', 'browser.execute_workflow', 'chrome_pipeline', 'chrome_extract_many', 'chrome_page_fetch', 'chrome_page_fetch_many', 'chrome_api_sequence', 'chrome_api_catalog', 'chrome_run_page_script', 'chrome_evaluate', 'chrome_cdp_command', 'chrome_cdp_batch', 'chrome_debug_bundle',
   'chrome_read_page', 'chrome_wait_for_user', 'chrome_screenshot', 'whatsapp_send_message',
   'browser.execute_plan', 'browser.cancel_plan', 'browser.plan_status', 'browser.metrics',
   'chrome_parallel_scrape', 'chrome_save_macro', 'chrome_run_macro', 'chrome_watch']);

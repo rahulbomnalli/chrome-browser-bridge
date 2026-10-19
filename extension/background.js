@@ -116,7 +116,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   activeDesignatedTabId = activeInfo.tabId;
 });
 
-async function waitForPageLoad(tabId, maxTimeout = 2000) {
+async function waitForPageLoad(tabId, maxTimeout = 2000, targetUrl = null) {
   return new Promise((resolve) => {
     let done = false;
     function finish() {
@@ -129,14 +129,36 @@ async function waitForPageLoad(tabId, maxTimeout = 2000) {
     const timeout = setTimeout(() => {
       finish();
     }, maxTimeout);
-    function listener(updatedId, info) {
-      if (updatedId === tabId && info.status === "complete") finish();
+
+    function isUrlMatch(currentUrl, expectedUrl) {
+      if (!expectedUrl) return true;
+      if (!currentUrl) return false;
+      try {
+        const u1 = new URL(currentUrl);
+        const u2 = new URL(expectedUrl);
+        return (u1.origin + u1.pathname.replace(/\/$/, '')) === (u2.origin + u2.pathname.replace(/\/$/, ''));
+      } catch {
+        return currentUrl.startsWith(expectedUrl) || expectedUrl.startsWith(currentUrl);
+      }
+    }
+
+    function listener(updatedId, info, tab) {
+      if (updatedId === tabId) {
+        if (info.status === "complete") {
+          const currentUrl = (tab && tab.url) || info.url;
+          if (!targetUrl || isUrlMatch(currentUrl, targetUrl)) {
+            finish();
+          }
+        }
+      }
     }
     chrome.tabs.onUpdated.addListener(listener);
-    // Subscribe first: completion between the status check and subscription
-    // otherwise costs the full timeout even though the page is ready.
+
+    // Only resolve immediately if tab status is complete AND current URL matches target URL
     chrome.tabs.get(tabId).then(tab => {
-      if (tab.status === "complete") finish();
+      if (tab.status === "complete" && (!targetUrl || isUrlMatch(tab.url, targetUrl))) {
+        finish();
+      }
     }).catch(() => {});
   });
 }
@@ -1118,6 +1140,8 @@ async function handleActionInner(action, params) {
         if (tab.url !== params.url) {
           await chrome.tabs.update(tab.id, { url: params.url, active: true });
           if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+        } else {
+          isReusedTab = true;
         }
       } else {
         // 2. Default & Dedicated Window Mode: Always execute in the dedicated agent window
@@ -1129,6 +1153,8 @@ async function handleActionInner(action, params) {
           if (tab) {
             if (tab.url !== params.url) {
               await chrome.tabs.update(tab.id, { url: params.url, active: true });
+            } else {
+              isReusedTab = true;
             }
           } else {
             tab = await chrome.tabs.create({ windowId: agentWin.windowId, url: params.url, active: true });
@@ -1142,7 +1168,7 @@ async function handleActionInner(action, params) {
       }
 
       if (!isReusedTab && params.waitForLoad !== false) {
-        await waitForPageLoad(tab.id, params.timeoutMs || 2500);
+        await waitForPageLoad(tab.id, params.timeoutMs || 2500, params.url);
       }
       const loadedTab = await chrome.tabs.get(tab.id);
       activeDesignatedTabId = loadedTab.id;
@@ -3457,11 +3483,30 @@ function inPageExtractData(params) {
 }
 
 function inPageExtractMany(queries) {
+  function extractSingle(params) {
+    const { selector, attribute = 'text', multiple = true, limit = 50 } = params;
+    if (!selector) throw new Error("Missing selector");
+
+    const nodes = Array.from(document.querySelectorAll(selector)).slice(0, limit);
+    const items = nodes.map((el) => {
+      if (attribute === 'text') return (el.innerText || el.textContent || '').trim();
+      if (attribute === 'html') return el.outerHTML;
+      if (attribute === 'value') return el.value !== undefined ? el.value : null;
+      return el.getAttribute(attribute);
+    });
+
+    return {
+      selector,
+      count: items.length,
+      data: multiple ? items : (items[0] || null)
+    };
+  }
+
   return {
     ok: true,
     results: queries.map(query => {
       try {
-        return inPageExtractData(query);
+        return extractSingle(query);
       } catch (error) {
         return { selector: query.selector, error: error.message };
       }

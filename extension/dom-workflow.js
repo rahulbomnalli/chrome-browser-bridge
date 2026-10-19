@@ -7,13 +7,58 @@ async function runDomWorkflow(options) {
   if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 steps');
   if (!Number.isFinite(budget) || budget <= 0 || budget > 600000) throw new Error('Invalid workflow timeout');
   const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'check', 'uncheck']);
+  // Helper to parse and normalize Playwright pseudo-selectors and snapshot references
+  function parsePlaywrightSelector(raw) {
+    if (typeof raw !== 'string') return null;
+    const s = raw.trim();
+    if (/^@\d+$/.test(s)) {
+      return { type: 'snapshot', id: Number(s.slice(1)), raw: s, base: null };
+    }
+    // text="..." or text='...'
+    let m = s.match(/^text=(?:"([^"]*)"|'([^']*)'|([^\s>+~]+))$/i);
+    if (m) {
+      return { type: 'text', base: '*', text: m[1] ?? m[2] ?? m[3], exact: false };
+    }
+    // :has-text("...")
+    m = s.match(/^(.*?):has-text\((?:"([^"]*)"|'([^']*)')\)$/i);
+    if (m) {
+      return { type: 'has-text', base: m[1].trim() || '*', text: m[2] ?? m[3], exact: false };
+    }
+    // :text-is("...")
+    m = s.match(/^(.*?):text-is\((?:"([^"]*)"|'([^']*)')\)$/i);
+    if (m) {
+      return { type: 'text-is', base: m[1].trim() || '*', text: m[2] ?? m[3], exact: true };
+    }
+    // :text("...")
+    m = s.match(/^(.*?):text\((?:"([^"]*)"|'([^']*)')\)$/i);
+    if (m) {
+      return { type: 'has-text', base: m[1].trim() || '*', text: m[2] ?? m[3], exact: false };
+    }
+    return { type: 'css', base: s };
+  }
+
   // Validate the complete plan before performing any mutation.
   for (const step of steps) {
     if (!step || !supported.has(step.action)) throw new Error('Each step needs a supported action');
     const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
-    if (targets.length !== 1 || typeof step[targets[0]] !== 'string' || !step[targets[0]]) throw new Error('Each step needs exactly one nonempty selector, role, label, or placeholder');
+    if (targets.length !== 1) throw new Error('Each step needs exactly one nonempty selector, role, label, or placeholder');
+    const targetVal = step[targets[0]];
+    const isTargetValid = typeof targetVal === 'string' ? Boolean(targetVal) : (Array.isArray(targetVal) && targetVal.length > 0 && targetVal.every(t => typeof t === 'string' && Boolean(t)));
+    if (!isTargetValid) throw new Error('Each step needs exactly one nonempty selector, role, label, or placeholder');
     if (step.name !== undefined && (targets[0] !== 'role' || typeof step.name !== 'string' || !step.name)) throw new Error('name requires a role target');
-    if (step.selector && !/^@\d+$/.test(step.selector)) (document.createDocumentFragment?.() || document).querySelectorAll(step.selector);
+    if (step.selector) {
+      const sels = Array.isArray(step.selector) ? step.selector : [step.selector];
+      for (const sel of sels) {
+        const parsed = parsePlaywrightSelector(sel);
+        if (parsed && parsed.base && parsed.base !== '*' && parsed.type !== 'snapshot') {
+          try {
+            (document.createDocumentFragment?.() || document).querySelectorAll(parsed.base);
+          } catch (e) {
+            throw new Error(`Invalid CSS selector '${sel}': ${e.message}`);
+          }
+        }
+      }
+    }
     if (['type', 'select'].includes(step.action) && typeof step.value !== 'string') throw new Error('type/select require a string value');
     if (step.trusted !== undefined && (step.action !== 'type' || typeof step.trusted !== 'boolean')) throw new Error('trusted is only supported for type');
     if (step.action === 'upload') {
@@ -49,7 +94,9 @@ async function runDomWorkflow(options) {
         while ((node = walker.nextNode())) if (node.shadowRoot) roots.push(node.shadowRoot);
       }
     }
-    return rootIndex.roots.flatMap(root => [...root.querySelectorAll(selector)]);
+    return rootIndex.roots.flatMap(root => {
+      try { return [...root.querySelectorAll(selector)]; } catch { return []; }
+    });
   }
   function roleOf(el) {
     const explicit = el.getAttribute('role');
@@ -72,12 +119,31 @@ async function runDomWorkflow(options) {
       el.getAttribute('title') || el.getAttribute('placeholder') || el.innerText || el.value || el.textContent || '';
   }
   function candidates(step) {
-    if (/^@\d+$/.test(step.selector || '')) {
-      const el = globalThis.__bridgeTargets?.get(Number(step.selector.slice(1)));
-      if (!el?.isConnected) throw new Error(`Stale snapshot reference: ${step.selector}`);
-      return [el];
+    if (step.selector) {
+      const sels = Array.isArray(step.selector) ? step.selector : [step.selector];
+      for (const sel of sels) {
+        const parsed = parsePlaywrightSelector(sel);
+        if (!parsed) continue;
+        if (parsed.type === 'snapshot') {
+          const el = globalThis.__bridgeTargets?.get(parsed.id);
+          if (el?.isConnected) return [el];
+          throw new Error(`Stale snapshot reference: ${sel}`);
+        }
+        let matched = queryAll(parsed.base || '*');
+        if (parsed.text !== undefined) {
+          const targetText = parsed.text;
+          matched = matched.filter(el => {
+            const content = (el.innerText || el.textContent || '').trim();
+            if (parsed.exact) {
+              return content === targetText || normalize(content) === normalize(targetText);
+            }
+            return content.includes(targetText) || normalize(content).includes(normalize(targetText));
+          });
+        }
+        if (matched.length > 0) return matched;
+      }
+      return [];
     }
-    if (step.selector) return queryAll(step.selector);
     if (step.role) {
       const controls = queryAll('[role], button, a[href], input, textarea, select, [contenteditable="true"]');
       return [...controls].filter(el => roleOf(el) === normalize(step.role) && (step.name === undefined || normalize(accessibleName(el)) === normalize(step.name)));
@@ -88,16 +154,65 @@ async function runDomWorkflow(options) {
     const ariaControls = queryAll('input[aria-label], textarea[aria-label], select[aria-label], [contenteditable="true"][aria-label]').filter(el => normalize(el.getAttribute('aria-label')) === normalize(step.label));
     return [...new Set([...controls, ...ariaControls])];
   }
-  const targetName = step => step.selector || step.label || step.placeholder || `${step.role}${step.name ? `: ${step.name}` : ''}`;
+  const targetName = step => (Array.isArray(step.selector) ? step.selector.join(' | ') : step.selector) || step.label || step.placeholder || `${step.role}${step.name ? `: ${step.name}` : ''}`;
   function resolve(step) {
-    const matches = [...candidates(step)].filter(el => {
+    let matches = [...candidates(step)].filter(el => {
       if (!el.isConnected) return false;
       if (step.action === 'upload' && el.type === 'file') return true;
       if (!el.getClientRects().length) return false;
       const style = getComputedStyle(el);
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     });
-    if (matches.length > 1) throw new Error(`Ambiguous target: ${targetName(step)} (${matches.length} matches)`);
+
+    // Semantic Disambiguation Engine: narrow candidates using all available constraints
+    if (matches.length > 1) {
+      // 1. Text constraint disambiguation
+      if (step.text !== undefined) {
+        const textMatches = matches.filter(el => (el.textContent || '').includes(step.text));
+        const exactText = textMatches.filter(el => normalize(el.textContent) === normalize(step.text));
+        if (exactText.length === 1) return exactText[0];
+        if (exactText.length > 1) matches = exactText;
+        else if (textMatches.length > 0) matches = textMatches;
+      }
+
+      // 2. Exact accessible name disambiguation
+      if (step.name !== undefined) {
+        const exactName = matches.filter(el => normalize(accessibleName(el)) === normalize(step.name));
+        if (exactName.length === 1) return exactName[0];
+        if (exactName.length > 1) matches = exactName;
+      }
+
+      // 3. Active open modal/dialog priority
+      const openModal = document.querySelector?.('dialog[open], [role="dialog"], .modal.show, [aria-modal="true"]');
+      if (openModal) {
+        const inModal = matches.filter(el => openModal.contains(el));
+        if (inModal.length === 1) return inModal[0];
+        if (inModal.length > 1) matches = inModal;
+      }
+
+      // 4. Interactive enabled priority (filter out disabled/aria-disabled)
+      const interactive = matches.filter(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true' && !el.readOnly);
+      if (interactive.length === 1) return interactive[0];
+      if (interactive.length > 1 && interactive.length < matches.length) matches = interactive;
+
+      // 5. Button tag specificity over wrapper divs
+      if (step.action === 'click' || step.role === 'button') {
+        const directButtons = matches.filter(el => el.tagName?.toLowerCase() === 'button' || el.tagName?.toLowerCase() === 'a');
+        if (directButtons.length === 1) return directButtons[0];
+        if (directButtons.length > 1) matches = directButtons;
+      }
+    }
+
+    if (matches.length > 1) {
+      // Never guess among multiple potentially destructive targets
+      const isDestructive = step.action === 'click' && /delete|remove|destroy|drop|terminate|wipe|clear|cancel/i.test(targetName(step) + ' ' + (matches[0].textContent || ''));
+      if (isDestructive) {
+        throw new Error(`Ambiguous destructive target: ${targetName(step)} (${matches.length} matches). Disambiguate before clicking.`);
+      }
+      const candidateList = matches.slice(0, 3).map(m => `<${m.tagName?.toLowerCase() || 'el'}${m.id ? '#' + m.id : ''}> "${(m.textContent || '').trim().slice(0, 25)}"`).join(', ');
+      throw new Error(`Ambiguous target: ${targetName(step)} (${matches.length} matches: [${candidateList}])`);
+    }
+
     const el = matches[0];
     if (!el) return null;
     if (step.text !== undefined && !el.textContent.includes(step.text)) return null;
@@ -173,17 +288,43 @@ async function runDomWorkflow(options) {
         }
         case 'type': {
           el.focus();
-          if (!step.trusted && el.isContentEditable) el.textContent = step.value;
-          else if (!step.trusted) {
+          if (!step.trusted && el.isContentEditable) {
+            let execOk = false;
+            try {
+              const sel = window.getSelection ? window.getSelection() : null;
+              if (sel) {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }
+              execOk = document.execCommand && document.execCommand('insertText', false, step.value);
+            } catch (_) {}
+            if (!execOk) el.textContent = step.value;
+          } else if (!step.trusted) {
+            // Support React/Vue controlled inputs via prototype setter + tracker reset
+            const tracker = el._valueTracker;
+            if (tracker) {
+              tracker.setValue(tracker.getValue() === '' ? 'a' : '');
+            }
             const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
             Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, step.value);
           }
           if (!step.trusted) {
-            el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            try {
+              el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: step.value }));
+            } catch (_) {}
+            try {
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: step.value }));
+            } catch (_) {
+              el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            }
             el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
             await Promise.resolve(); // Allow synchronous framework reconciliation and queued microtasks.
           }
-          if (step.trusted || String(el.isContentEditable ? el.textContent : el.value) !== step.value) {
+          const actualText = el.isContentEditable ? (el.textContent || '').trim() : String(el.value ?? '');
+          const expectedText = el.isContentEditable ? step.value.trim() : step.value;
+          if (step.trusted || actualText !== expectedText) {
             if (el.isContentEditable) {
               const range = document.createRange(); range.selectNodeContents(el);
               const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);

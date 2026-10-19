@@ -35,3 +35,22 @@ test('extract_many evaluates each selector and returns selector-specific errors 
   assert.equal(result.results[1].data, '/target');
   assert.equal(result.results[2].error, 'Invalid selector');
 });
+
+test('inPageExtractMany is self-contained and executes without inPageExtractData in page scope', () => {
+  const funcStart = source.indexOf('function inPageExtractMany(queries) {');
+  const funcEnd = source.indexOf('function inPageExtractCollection', funcStart);
+  const selfContainedFunc = source.slice(funcStart, funcEnd);
+
+  const document = {
+    querySelectorAll(selector) {
+      return [{ innerText: 'Self-Contained Content', textContent: 'Self-Contained Content' }];
+    }
+  };
+  // Explicitly ensure inPageExtractData is not defined in this isolated context
+  const context = vm.createContext({ document });
+  vm.runInContext(`${selfContainedFunc}\nthis.extractMany = inPageExtractMany;`, context);
+
+  const result = context.extractMany([{ selector: '.item' }]);
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].data[0], 'Self-Contained Content');
+});

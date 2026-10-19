@@ -170,7 +170,7 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.match(debugBundleTool.description, /network and console/);
   const apiCatalogTool = list.result.tools.find(tool => tool.name === 'chrome_api_catalog');
   assert.match(apiCatalogTool.description, /never returns cookies/);
-  assert.ok(list.result.tools.length <= 29);
+  assert.ok(list.result.tools.length <= 30);
   assert.equal((await rpc('tools/call', { name: 'chrome_act', arguments: {} })).result.isError, true);
   const failed = await rpc('tools/call', { name: 'chrome_act', arguments: { steps: [{ action: 'click', selector: '#go' }] } });
   assert.equal(failed.result.isError, true);

@@ -130,7 +130,11 @@ async function executeWorkflow(plan, { getTargetTab, execute, shouldCancel = () 
       const fields = ['action', 'selector', 'role', 'name', 'label', 'placeholder', 'value', 'text', 'equals', 'attribute', 'trusted', 'files'];
       for (const key of Object.keys(step)) if (!fields.includes(key)) throw new Error(`Unsupported DOM step field: ${key}`);
       const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
-      if (targets.length !== 1 || typeof step[targets[0]] !== 'string' || !step[targets[0]]) throw new Error('DOM step requires exactly one target');
+      const isTargetValid = targets.length === 1 && (
+        (typeof step[targets[0]] === 'string' && Boolean(step[targets[0]])) ||
+        (targets[0] === 'selector' && Array.isArray(step.selector) && step.selector.length > 0 && step.selector.every(s => typeof s === 'string' && s.trim()))
+      );
+      if (!isTargetValid) throw new Error('DOM step requires exactly one target');
       if (step.role !== undefined && step.name !== undefined && typeof step.name !== 'string') throw new Error('Role target name must be a string');
       if (step.trusted !== undefined && typeof step.trusted !== 'boolean') throw new Error('trusted must be boolean');
       if (['type', 'select'].includes(step.action) && typeof step.value !== 'string') throw new Error('type/select require a string value');
