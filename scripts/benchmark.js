@@ -6,6 +6,7 @@ const { once } = require('node:events');
 const path = require('node:path');
 const WebSocket = require('ws');
 const { createTransport } = require('../lib/transport');
+const { getAuthToken } = require('../lib/token');
 
 async function main() {
   let child, socket;
@@ -26,7 +27,8 @@ async function main() {
         child.once('exit', code => { clearTimeout(timer); reject(new Error(`Benchmark server exited: ${code}`)); });
         child.stdout.on('data', chunk => { if (chunk.toString().includes('HTTP API:')) { clearTimeout(timer); resolve(); } });
       });
-      socket = new WebSocket(`ws://127.0.0.1:${port}`);
+      const token = getAuthToken();
+      socket = new WebSocket(`ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`);
       await once(socket, 'open');
       socket.on('message', raw => {
         const msg = JSON.parse(raw);
