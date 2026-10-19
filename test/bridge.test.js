@@ -154,10 +154,8 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   }
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' });
   assert.equal(init.result.protocolVersion, '2025-06-18');
-  assert.match(init.result.instructions, /verify/);
-  assert.match(init.result.instructions, /reuse fresh snapshots/);
-  assert.match(init.result.instructions, /never invent/);
-  assert.match(init.result.instructions, /unverified/);
+  assert.match(init.result.instructions, /ULTRA-FAST/);
+  assert.match(init.result.instructions, /chrome_workflow/);
   assert.deepEqual((await rpc('ping')).result, {});
   const list = await rpc('tools/list');
   assert.ok(list.result.tools.some(tool => tool.name === 'chrome_act'));
@@ -245,7 +243,7 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
     });
   }
   const fullInit = await fullRpc('initialize', { protocolVersion: '2025-06-18' });
-  assert.match(fullInit.result.instructions, /never invent/);
+  assert.match(fullInit.result.instructions, /ULTRA-FAST/);
   const click = await fullRpc('tools/call', { name: 'chrome_click', arguments: { target: '#go' } });
   assert.equal(click.result.isError, true);
   assert.equal(JSON.parse(click.result.content[0].text).ok, false);
