@@ -425,3 +425,10 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`Auth Token:    Configured (${activeToken.slice(0, 8)}...[active])`);
   console.log(`====================================================`);
 });
+
+process.on('unhandledRejection', (err) => {
+  console.error(`[Bridge Server] Unhandled promise rejection: ${err?.stack || err}`);
+});
+process.on('uncaughtException', (err) => {
+  console.error(`[Bridge Server] Uncaught exception: ${err?.stack || err}`);
+});

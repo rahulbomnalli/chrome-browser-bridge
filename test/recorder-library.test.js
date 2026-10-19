@@ -141,3 +141,11 @@ test('errors: taxonomy enforces retry safety and recovery rules', () => {
   assert.equal(classified.code, ErrorCode.DEADLINE_EXCEEDED);
   assert.equal(classified.retrySafe, false);
 });
+
+test('errors: classify transport and browser failures with outcome-aware recovery', () => {
+  assert.equal(classifyError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })).code, 'NETWORK_TRANSIENT');
+  assert.equal(classifyError(new Error('Chrome extension disconnected')).code, ErrorCode.EXTENSION_DISCONNECTED);
+  assert.equal(classifyError(new Error('Navigation was interrupted')).code, ErrorCode.NAVIGATION_INTERRUPTED);
+  assert.equal(classifyError(new Error('Request rate limited: too many requests')).code, ErrorCode.RATE_LIMITED);
+  assert.equal(classifyError(new Error('Mutation outcome unknown')).retrySafe, false);
+});

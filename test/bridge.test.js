@@ -26,7 +26,13 @@ test('timeouts are finite and include human checkpoints', () => {
   assert.equal(actionTimeout({ timeoutSec: 120 }), 120000);
   assert.equal(actionTimeout({}, 'wait_for_user'), 120000);
   assert.equal(actionTimeout({}, 'watch'), 20000);
-  assert.equal(actionTimeout({}, 'whatsapp_send'), 150000);
+  assert.equal(actionTimeout({}, 'whatsapp_send'), 30000);
+  assert.equal(actionTimeout({ timeoutMs: 150000 }), 150000);
+  const previousDefault = process.env.BRIDGE_DEFAULT_TIMEOUT_MS;
+  process.env.BRIDGE_DEFAULT_TIMEOUT_MS = '45000';
+  assert.equal(actionTimeout(), 45000);
+  if (previousDefault === undefined) delete process.env.BRIDGE_DEFAULT_TIMEOUT_MS;
+  else process.env.BRIDGE_DEFAULT_TIMEOUT_MS = previousDefault;
   for (const timeoutMs of [-1, 0, Infinity, NaN, 600001]) assert.throws(() => actionTimeout({ timeoutMs }));
 });
 
@@ -114,8 +120,10 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   });
   await once(ws2, 'open');
   t.after(() => ws2.terminate());
+  let whatsappTimeout;
   ws2.on('message', raw => {
     const msg = JSON.parse(raw);
+    if (msg.action === 'whatsapp_send') whatsappTimeout = msg.params.timeoutMs;
     const result = msg.action === 'api_catalog' ? { tabId: msg.params.tabId || 7, total: 1, count: 1, requests: [{ method: 'GET', url: '/api/users' }] }
       : msg.action === 'debug_bundle' ? { tabId: msg.params.tabId || 7, network: { logs: [] }, console: { logs: [] } }
       : msg.action === 'cdp_batch' ? { ok: true, completed: msg.params.commands.length, results: msg.params.commands.map(command => ({ method: command.method, ok: true })) }
@@ -148,6 +156,8 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.equal(init.result.protocolVersion, '2025-06-18');
   assert.match(init.result.instructions, /verify/);
   assert.match(init.result.instructions, /reuse fresh snapshots/);
+  assert.match(init.result.instructions, /never invent/);
+  assert.match(init.result.instructions, /unverified/);
   assert.deepEqual((await rpc('ping')).result, {});
   const list = await rpc('tools/list');
   assert.ok(list.result.tools.some(tool => tool.name === 'chrome_act'));
@@ -175,7 +185,10 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   const failed = await rpc('tools/call', { name: 'chrome_act', arguments: { steps: [{ action: 'click', selector: '#go' }] } });
   assert.equal(failed.result.isError, true);
   assert.equal(JSON.parse(failed.result.content[0].text).completed, 1);
-  assert.equal((await rpc('tools/call', { name: 'whatsapp_send_message', arguments: { contact: 'Test', message: 'Hello' } })).result.isError, true);
+  assert.equal((await rpc('tools/call', { name: 'whatsapp_send_message', arguments: {
+    contact: 'Test', message: 'Hello', timeoutMs: 54321
+  } })).result.isError, true);
+  assert.equal(whatsappTimeout, 54321);
   assert.equal((await rpc('tools/call', { name: 'chrome_run_macro', arguments: { name: 'missing' } })).result.isError, true);
   assert.equal((await rpc('tools/call', { name: 'chrome_watch', arguments: { selector: '#feed', timeoutMs: 10 } })).result.isError, false);
   const fetched = await rpc('tools/call', { name: 'chrome_page_fetch', arguments: { url: '/api/items', method: 'GET' } });
@@ -213,4 +226,32 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.ok((await transport.getStatus()).latencyMs.samples >= 20);
   mcp.stdin.end();
   await once(mcp, 'exit');
+
+  const fullMcp = spawn(process.execPath, ['mcp-server.js'], { cwd: root, env: { ...process.env, BRIDGE_URL: url, BRIDGE_TOOL_PROFILE: 'full' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => fullMcp.kill());
+  const fullLines = readline.createInterface({ input: fullMcp.stdout });
+  const fullPending = new Map();
+  let fullId = 0;
+  fullLines.on('line', line => {
+    const message = JSON.parse(line);
+    fullPending.get(message.id)?.(message);
+    fullPending.delete(message.id);
+  });
+  function fullRpc(method, params) {
+    const next = ++fullId;
+    return new Promise(resolve => {
+      fullPending.set(next, resolve);
+      fullMcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: next, method, params }) + '\n');
+    });
+  }
+  const fullInit = await fullRpc('initialize', { protocolVersion: '2025-06-18' });
+  assert.match(fullInit.result.instructions, /never invent/);
+  const click = await fullRpc('tools/call', { name: 'chrome_click', arguments: { target: '#go' } });
+  assert.equal(click.result.isError, true);
+  assert.equal(JSON.parse(click.result.content[0].text).ok, false);
+  const challenge = await fullRpc('tools/call', { name: 'chrome_detect_challenge', arguments: {} });
+  assert.equal(challenge.result.isError, true);
+  assert.doesNotMatch(challenge.result.content[0].text, /No security challenges/);
+  fullMcp.stdin.end();
+  await once(fullMcp, 'exit');
 });

@@ -72,11 +72,15 @@ Run:
 codex mcp add chrome-browser-bridge --env BRIDGE_TOOL_PROFILE=fast -- node "/absolute/path/to/chrome-browser-bridge/mcp-server.js"
 ```
 
+Actions that expose `timeoutMs` or `timeoutSec` accept per-call deadline overrides. Set `BRIDGE_DEFAULT_TIMEOUT_MS` to change the fallback deadline; human checkpoints and page-watch actions retain their dedicated defaults.
+
 ---
 
 ## 🛠️ Core Tool Capabilities
 
 The server defaults to the fifteen-tool `fast` profile, and generated client configs set it explicitly. It includes complete workflows plus parallel URL research, batched extraction/API requests, idempotent `browser.execute_plan`, cancellation/status checkpoints, and bounded execution metrics. Specialized page-script, CDP, and macro tools remain available through `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full`.
+
+MCP guidance requires clients to ground claims in returned tool data, inspect unknown page state instead of guessing, and report task success only when the result and final verification support it. Legacy tools return structured browser results rather than unconditional success summaries.
 
 | Tool | Purpose | Performance Benefit |
 | :--- | :--- | :--- |
