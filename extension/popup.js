@@ -1,346 +1,195 @@
-// Antigravity Chrome Bridge - Dark Theme Popup Controller
+// Chrome Browser Bridge — Pro Popup Controller
 document.addEventListener("DOMContentLoaded", async () => {
   const statusPill = document.getElementById("statusPill");
   const statusLabel = document.getElementById("statusLabel");
-  const sidepanelBtn = document.getElementById("sidepanelBtn");
-  const pageDomain = document.getElementById("pageDomain");
   const pageTitle = document.getElementById("pageTitle");
   const pageUrl = document.getElementById("pageUrl");
-  const reloadBtn = document.getElementById("reloadBtn");
-  const commandInput = document.getElementById("commandInput");
-  const submitBtn = document.getElementById("submitBtn");
-  const chipSnapshot = document.getElementById("chipSnapshot");
-  const chipRead = document.getElementById("chipRead");
-  const chipScroll = document.getElementById("chipScroll");
-  const canvasCard = document.getElementById("canvasCard");
-  const canvasImg = document.getElementById("canvasImg");
-  const canvasText = document.getElementById("canvasText");
-  const copyCanvasBtn = document.getElementById("copyCanvasBtn");
-  const downloadCanvasBtn = document.getElementById("downloadCanvasBtn");
-  const closeCanvasBtn = document.getElementById("closeCanvasBtn");
+  const chipTabId = document.getElementById("chipTabId");
+  const chipWindowId = document.getElementById("chipWindowId");
+  const chipCdp = document.getElementById("chipCdp");
+  const reloadTabBtn = document.getElementById("reloadTabBtn");
+  const metricP50 = document.getElementById("metricP50");
+  const lastActionName = document.getElementById("lastActionName");
+  const lastActionDuration = document.getElementById("lastActionDuration");
+  const lastActionStatus = document.getElementById("lastActionStatus");
+  const inspectBtn = document.getElementById("inspectBtn");
+  const highlightBtn = document.getElementById("highlightBtn");
+  const copyTokenBtn = document.getElementById("copyTokenBtn");
+  const sidepanelBtn = document.getElementById("sidepanelBtn");
   const toast = document.getElementById("toast");
 
-  let currentTab = null;
-  let activeImageBlob = null;
-  let activeTextContent = null;
+  let activeTab = null;
+  let activeToken = null;
 
   function showToast(msg) {
     if (!toast) return;
     toast.textContent = msg;
     toast.classList.add("show");
-    setTimeout(() => toast.classList.remove("show"), 2200);
+    setTimeout(() => toast.classList.remove("show"), 2000);
   }
 
-  function getDomain(rawUrl) {
-    try {
-      const u = new URL(rawUrl);
-      return u.hostname.replace(/^www\./, "");
-    } catch {
-      return rawUrl || "";
-    }
-  }
-
-  // 1. Status Check
-  async function checkStatus() {
-    try {
-      const res = await fetch("http://127.0.0.1:8765/status", { signal: AbortSignal.timeout(1000) });
-      const data = await res.json();
-      if (data.connected || data.status === "ok") {
-        if (statusPill) statusPill.className = "status-pill";
-        if (statusLabel) statusLabel.textContent = "Bridge Active";
-      } else {
-        if (statusPill) statusPill.className = "status-pill offline";
-        if (statusLabel) statusLabel.textContent = "Offline";
-      }
-    } catch {
-      if (statusPill) statusPill.className = "status-pill offline";
-      if (statusLabel) statusLabel.textContent = "Offline";
-    }
-  }
-
-  statusPill?.addEventListener("click", async () => {
-    if (statusLabel) statusLabel.textContent = "Reconnecting...";
-    await checkStatus();
-    showToast(statusLabel?.textContent === "Bridge Active" ? "Connected" : "Server not running");
-  });
-
-  // 2. Load Active Tab
+  // 1. Load Active Tab
   async function loadActiveTab() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab) {
-        currentTab = tab;
-        if (pageDomain) pageDomain.textContent = getDomain(tab.url);
-        if (pageTitle) pageTitle.textContent = tab.title || "Untitled Tab";
-        if (pageUrl) pageUrl.textContent = tab.url || "";
+        activeTab = tab;
+        pageTitle.textContent = tab.title || "Untitled Tab";
+        pageUrl.textContent = tab.url ? new URL(tab.url).hostname : "";
+        chipTabId.textContent = `Tab: ${tab.id} 📋`;
+        chipWindowId.textContent = `Win: ${tab.windowId}`;
       }
-    } catch (err) {
-      if (pageTitle) pageTitle.textContent = "No active page";
+    } catch (_) {
+      pageTitle.textContent = "No active page";
     }
   }
 
-  // 3. Reload Button
-  reloadBtn?.addEventListener("click", async () => {
-    if (!currentTab) return;
-    reloadBtn.style.transform = "rotate(360deg)";
+  // 2. Poll Bridge Telemetry & Status
+  async function updateStatus() {
     try {
-      await chrome.tabs.reload(currentTab.id);
-      showToast("Page reloaded");
-    } finally {
-      setTimeout(() => { if (reloadBtn) reloadBtn.style.transform = "none"; }, 400);
-    }
-  });
+      chrome.runtime.sendMessage({ type: "get_bridge_status" }, (res) => {
+        if (chrome.runtime.lastError || !res) return;
+        activeToken = res.token || null;
+        if (res.connected) {
+          statusPill.className = "status-pill";
+          statusLabel.textContent = "Online";
+        } else {
+          statusPill.className = "status-pill offline";
+          statusLabel.textContent = "Offline";
+        }
 
-  // 4. Command Input Handler (Smart Action or URL)
-  async function handleCommand() {
-    if (!commandInput) return;
-    const query = commandInput.value.trim();
-    if (!query || !currentTab) return;
-
-    // Check if it's a URL or domain
-    const isDomain = query.includes(".") && !query.includes(" ");
-    const isUrl = /^https?:\/\//i.test(query) || query.startsWith("localhost") || query.startsWith("127.0.0.1");
-
-    if (isUrl || isDomain) {
-      let finalUrl = query;
-      if (!/^https?:\/\//i.test(finalUrl)) {
-        finalUrl = finalUrl.startsWith("localhost") ? "http://" + finalUrl : "https://" + finalUrl;
-      }
-      await chrome.tabs.update(currentTab.id, { url: finalUrl });
-      showToast("Navigating...");
-      setTimeout(() => window.close(), 300);
-      return;
-    }
-
-    // Otherwise, click the target button/link by text on the page
-    if (submitBtn) submitBtn.textContent = "⏳";
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: currentTab.id },
-        func: (targetText) => {
-          const lower = targetText.toLowerCase();
-          const clickable = Array.from(document.querySelectorAll("button, a, input[type='button'], input[type='submit'], [role='button']"));
-          const match = clickable.find(el => {
-            const t = (el.innerText || el.textContent || el.value || el.getAttribute("aria-label") || "").trim().toLowerCase();
-            return t === lower || t.includes(lower);
-          });
-
-          if (match) {
-            match.scrollIntoView({ behavior: "smooth", block: "center" });
-            match.click();
-            return { found: true, text: match.innerText || match.value || targetText };
+        if (res.lastTelemetry) {
+          lastActionName.textContent = res.lastTelemetry.action || "Ready";
+          lastActionDuration.textContent = res.lastTelemetry.durationMs ? `${res.lastTelemetry.durationMs} ms` : "—";
+          if (res.lastTelemetry.ok) {
+            lastActionStatus.className = "tag-ok";
+            lastActionStatus.textContent = "OK";
+          } else {
+            lastActionStatus.className = "tag-fail";
+            lastActionStatus.style.background = "rgba(239, 68, 68, 0.12)";
+            lastActionStatus.style.color = "#ef4444";
+            lastActionStatus.textContent = "FAIL";
           }
-          return { found: false };
-        },
-        args: [query]
+        }
       });
 
-      const res = results[0]?.result;
-      if (res && res.found) {
-        showToast(`Clicked "${res.text.slice(0, 20)}"`);
-        commandInput.value = "";
-      } else {
-        showToast(`Could not find "${query}"`);
+      // Query server metrics for p50
+      const serverRes = await fetch("http://127.0.0.1:8765/status", { signal: AbortSignal.timeout(600) }).then(r => r.json()).catch(() => null);
+      if (serverRes?.latencyMs?.p50 !== null && serverRes?.latencyMs?.p50 !== undefined) {
+        metricP50.textContent = `p50: ${serverRes.latencyMs.p50}ms`;
       }
-    } catch (err) {
-      showToast("Error: " + err.message);
-    } finally {
-      if (submitBtn) submitBtn.textContent = "➔";
-    }
+    } catch (_) {}
   }
 
-  submitBtn?.addEventListener("click", handleCommand);
-  commandInput?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") handleCommand();
+  // 3. User Actions
+  chipTabId?.addEventListener("click", () => {
+    if (!activeTab?.id) return;
+    navigator.clipboard.writeText(String(activeTab.id));
+    showToast(`Copied Tab ID: ${activeTab.id}`);
   });
 
-  const chipNewTab = document.getElementById("chipNewTab");
-  chipNewTab?.addEventListener("click", async () => {
-    try {
-      showToast("Opening new tab with your account...");
-      const res = await fetch("http://127.0.0.1:8765/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "new_tab", params: { url: "https://google.com" } })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast("📑 New task tab active!");
-        await loadActiveTab();
-      }
-    } catch {
-      showToast("Bridge unreachable");
+  reloadTabBtn?.addEventListener("click", async () => {
+    if (!activeTab?.id) return;
+    reloadTabBtn.style.transform = "rotate(360deg)";
+    await chrome.tabs.reload(activeTab.id);
+    showToast("Reloaded tab");
+    setTimeout(() => { reloadTabBtn.style.transform = "none"; }, 400);
+    await loadActiveTab();
+  });
+
+  statusPill?.addEventListener("click", () => {
+    statusLabel.textContent = "Reconnecting...";
+    chrome.runtime.sendMessage({ type: "reconnect_bridge" }, () => {
+      showToast("Reconnecting bridge socket...");
+      setTimeout(updateStatus, 500);
+    });
+  });
+
+  copyTokenBtn?.addEventListener("click", () => {
+    if (activeToken) {
+      navigator.clipboard.writeText(activeToken);
+      showToast("Copied Bearer Token 🔑");
+    } else {
+      showToast("No active token found");
     }
   });
 
-  // 5. Snapshot Chip
-  chipSnapshot?.addEventListener("click", async () => {
-    if (!currentTab) return;
-    chipSnapshot.textContent = "📸 Capturing...";
-
-    try {
-      const dataUrl = await chrome.tabs.captureVisibleTab(currentTab.windowId, { format: "png" });
-      if (canvasText) canvasText.style.display = "none";
-      if (canvasImg) {
-        canvasImg.src = dataUrl;
-        canvasImg.style.display = "block";
-      }
-      if (downloadCanvasBtn) downloadCanvasBtn.style.display = "inline-flex";
-      if (canvasCard) canvasCard.style.display = "block";
-
-      const res = await fetch(dataUrl);
-      activeImageBlob = await res.blob();
-      activeTextContent = null;
-      showToast("Snapshot captured!");
-    } catch (err) {
-      showToast("Capture failed");
-    } finally {
-      chipSnapshot.textContent = "📸 Snapshot";
-    }
-  });
-
-  // 6. Read Page Chip
-  chipRead?.addEventListener("click", async () => {
-    if (!currentTab) return;
-    chipRead.textContent = "📄 Reading...";
-
+  inspectBtn?.addEventListener("click", async () => {
+    if (!activeTab?.id) return;
+    showToast("Inspecting page tree...");
     try {
       const results = await chrome.scripting.executeScript({
-        target: { tabId: currentTab.id },
+        target: { tabId: activeTab.id },
         func: () => {
-          const main = document.querySelector("article, main, #content, .content") || document.body;
-          const headings = Array.from(main.querySelectorAll("h1, h2, h3")).map(h => h.innerText.trim()).filter(Boolean);
-          const paras = Array.from(main.querySelectorAll("p")).map(p => p.innerText.trim()).filter(t => t.length > 25);
-          return {
-            title: headings[0] || document.title,
-            content: paras.slice(0, 5).join("\n\n")
-          };
+          const els = Array.from(document.querySelectorAll("button, a[href], input, textarea, select, [role='button']"))
+            .filter(el => el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+          const lines = els.slice(0, 30).map((el, idx) => {
+            const tag = el.tagName.toLowerCase();
+            const text = (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().slice(0, 40).replace(/\n/g, ' ');
+            return `@${idx + 1}[${tag}] "${text}"`;
+          });
+          return { count: els.length, summary: lines.join('\n') };
         }
       });
-
-      const data = results[0]?.result;
-      if (data && data.content) {
-        if (canvasImg) canvasImg.style.display = "none";
-        if (downloadCanvasBtn) downloadCanvasBtn.style.display = "none";
-        if (canvasText) {
-          canvasText.innerHTML = `<strong style="color:#ffffff;">${data.title}</strong><br><br>${data.content.replace(/\n\n/g, '<br><br>')}`;
-          canvasText.style.display = "block";
-        }
-        if (canvasCard) canvasCard.style.display = "block";
-
-        activeTextContent = `${data.title}\n\n${data.content}`;
-        activeImageBlob = null;
-        showToast("Read page text");
+      const res = results[0]?.result;
+      if (res?.summary) {
+        await navigator.clipboard.writeText(res.summary);
+        showToast(`Copied ${res.count} targets to clipboard 📋`);
       } else {
-        showToast("No readable text found");
+        showToast("No interactive elements found");
       }
-    } catch {
-      showToast("Cannot read this page");
-    } finally {
-      chipRead.textContent = "📄 Read";
+    } catch (e) {
+      showToast("Cannot inspect this page");
     }
   });
 
-  // 7. Scroll Chip
-  chipScroll?.addEventListener("click", async () => {
-    if (!currentTab) return;
+  highlightBtn?.addEventListener("click", async () => {
+    if (!activeTab?.id) return;
     try {
       await chrome.scripting.executeScript({
-        target: { tabId: currentTab.id },
-        func: () => window.scrollBy({ top: 600, behavior: "smooth" })
+        target: { tabId: activeTab.id },
+        func: () => {
+          const existing = document.getElementById("__bridge_highlight_root");
+          if (existing) { existing.remove(); return; }
+          const root = document.createElement("div");
+          root.id = "__bridge_highlight_root";
+          root.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:99999999;";
+          const els = Array.from(document.querySelectorAll("button, a[href], input, textarea, select, [role='button']"))
+            .filter(el => el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').slice(0, 40);
+          els.forEach((el, idx) => {
+            const r = el.getBoundingClientRect();
+            const box = document.createElement("div");
+            box.style.cssText = `position:absolute;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;border:2px solid #3b82f6;background:rgba(59,130,246,0.1);box-sizing:border-box;border-radius:3px;`;
+            const badge = document.createElement("span");
+            badge.textContent = `@${idx + 1}`;
+            badge.style.cssText = "position:absolute;top:-10px;left:0;background:#2563eb;color:#fff;font-size:10px;font-weight:700;padding:1px 4px;border-radius:3px;font-family:monospace;";
+            box.appendChild(badge);
+            root.appendChild(box);
+          });
+          document.body.appendChild(root);
+        }
       });
-      showToast("Scrolled");
-    } catch {}
-  });
-
-  // 8. Canvas Actions
-  copyCanvasBtn?.addEventListener("click", async () => {
-    if (activeImageBlob) {
-      try {
-        await navigator.clipboard.write([new ClipboardItem({ "image/png": activeImageBlob })]);
-        showToast("Copied screenshot to clipboard!");
-      } catch {
-        showToast("Clipboard copy not supported");
-      }
-    } else if (activeTextContent) {
-      await navigator.clipboard.writeText(activeTextContent);
-      showToast("Copied text to clipboard!");
+      showToast("Toggled element highlights 🎯");
+    } catch (_) {
+      showToast("Cannot highlight this page");
     }
   });
 
-  downloadCanvasBtn?.addEventListener("click", () => {
-    if (!canvasImg || !canvasImg.src) return;
-    const a = document.createElement("a");
-    a.href = canvasImg.src;
-    a.download = `snapshot-${Date.now()}.png`;
-    a.click();
-    showToast("Downloaded!");
-  });
-
-  closeCanvasBtn?.addEventListener("click", () => {
-    if (canvasCard) canvasCard.style.display = "none";
-  });
-
-  // 9. Side Panel Toggle
   sidepanelBtn?.addEventListener("click", async () => {
-    if (chrome.sidePanel && chrome.sidePanel.open && currentTab) {
-      try {
-        await chrome.sidePanel.open({ windowId: currentTab.windowId });
+    if (!activeTab?.windowId) return;
+    try {
+      if (chrome.sidePanel?.open) {
+        await chrome.sidePanel.open({ windowId: activeTab.windowId });
         window.close();
-      } catch {
-        showToast("Side panel not supported");
+      } else {
+        chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
       }
+    } catch (_) {
+      chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
     }
   });
 
-  // 10. Launch Isolated Sandbox Window
-  const sandboxBtn = document.getElementById("sandboxBtn");
-  if (sandboxBtn) {
-    sandboxBtn.addEventListener("click", async () => {
-      showToast("Launching sandbox...");
-      try {
-        const res = await fetch("http://127.0.0.1:8765/action", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "sandbox_window", params: { focus: false } })
-        });
-        const data = await res.json();
-        if (data.success) {
-          showToast("🪟 Dedicated sandbox active!");
-          setTimeout(() => window.close(), 600);
-        } else {
-          showToast("Failed to launch sandbox");
-        }
-      } catch {
-        showToast("Bridge server unreachable");
-      }
-    });
-  }
-
-  // 11. Highlight Detected Elements
-  const chipHighlight = document.getElementById("chipHighlight");
-  if (chipHighlight) {
-    chipHighlight.addEventListener("click", async () => {
-      if (!currentTab) return;
-      try {
-        const res = await fetch("http://127.0.0.1:8765/action", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "highlight_elements", params: { tabId: currentTab.id } })
-        });
-        const data = await res.json();
-        if (data.success) {
-          showToast(`✨ Highlighted ${data.result.count} elements!`);
-        } else {
-          showToast("Could not highlight elements");
-        }
-      } catch {
-        showToast("Highlight failed");
-      }
-    });
-  }
-
-  // Init
-  await checkStatus();
-  await loadActiveTab();
+  loadActiveTab();
+  updateStatus();
+  setInterval(updateStatus, 2000);
 });

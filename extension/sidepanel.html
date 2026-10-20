@@ -3,23 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chrome Bridge Side Panel</title>
+  <title>Chrome Browser Bridge — Side Panel</title>
   <style>
     :root {
       --bg: #090b10;
-      --surface: #121620;
+      --surface: #11151f;
+      --surface-border: rgba(255, 255, 255, 0.08);
       --surface-hover: #181f2c;
-      --border: rgba(255, 255, 255, 0.07);
-      --border-hover: rgba(255, 255, 255, 0.15);
       --text: #f3f4f6;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
       --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.25);
       --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.2);
-      --radius-sm: 8px;
-      --radius-md: 12px;
+      --error: #ef4444;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -27,121 +24,109 @@
     body {
       width: 100%;
       height: 100vh;
-      padding: 18px 16px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      padding: 16px;
+      font-family: var(--font);
       font-size: 13px;
       color: var(--text);
       background-color: var(--bg);
       line-height: 1.45;
       display: flex;
       flex-direction: column;
-      overflow-x: hidden;
+      gap: 12px;
       overflow-y: auto;
       -webkit-font-smoothing: antialiased;
     }
 
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
-
-    /* Header */
-    .header {
+    header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 16px;
       padding-bottom: 12px;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--surface-border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: #fff;
     }
 
     .brand-title {
+      font-size: 14px;
       font-weight: 700;
-      font-size: 14.5px;
-      letter-spacing: -0.2px;
-      color: #ffffff;
+      color: #fff;
     }
 
     .status-pill {
       display: inline-flex;
       align-items: center;
-      gap: 7px;
+      gap: 6px;
       padding: 4px 10px;
       border-radius: 9999px;
-      background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.22);
-      color: #34d399;
       font-size: 11px;
       font-weight: 600;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--success);
       cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .status-pill.offline {
-      background: rgba(239, 68, 68, 0.08);
-      border-color: rgba(239, 68, 68, 0.22);
-      color: #f87171;
+      background: rgba(239, 68, 68, 0.1);
+      border-color: rgba(239, 68, 68, 0.25);
+      color: var(--error);
     }
 
-    .pulse-dot {
-      width: 7px;
-      height: 7px;
+    .dot {
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: currentColor;
-      box-shadow: 0 0 8px currentColor;
+      box-shadow: 0 0 6px currentColor;
     }
 
-    /* Active Page Card */
-    .page-card {
+    .card {
       background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 14px;
-      margin-bottom: 14px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
-      position: relative;
-      overflow: hidden;
+      border: 1px solid var(--surface-border);
+      border-radius: 10px;
+      padding: 12px;
     }
 
-    .page-card::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
-    }
-
-    .page-header {
+    .card-header {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      margin-bottom: 6px;
     }
 
-    .page-meta {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .domain-tag {
+    .card-title {
       font-size: 11px;
-      font-weight: 600;
-      color: #38bdf8;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.6px;
-      margin-bottom: 3px;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
     }
 
     .page-title {
+      font-size: 13px;
       font-weight: 600;
-      font-size: 13.5px;
-      color: #ffffff;
+      color: #fff;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      margin-bottom: 2px;
     }
 
     .page-url {
@@ -150,209 +135,135 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      margin-top: 2px;
+      margin-bottom: 8px;
     }
 
-    .reload-btn {
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      border-radius: 8px;
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: all 0.2s;
-      flex-shrink: 0;
-    }
-
-    .reload-btn:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-      transform: rotate(45deg);
-    }
-
-    /* Command / Action Bar */
-    .command-box {
-      margin-bottom: 14px;
-    }
-
-    .input-wrapper {
-      position: relative;
-      display: flex;
-      align-items: center;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      transition: all 0.2s;
-    }
-
-    .input-wrapper:focus-within {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
-    }
-
-    .command-input {
-      width: 100%;
-      background: transparent;
-      border: none;
-      outline: none;
-      padding: 11px 40px 11px 14px;
-      color: var(--text);
-      font-size: 13px;
-    }
-
-    .command-input::placeholder {
-      color: var(--text-dim);
-    }
-
-    .action-submit-btn {
-      position: absolute;
-      right: 6px;
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 7px;
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      font-size: 12px;
-      transition: all 0.15s;
-    }
-
-    .action-submit-btn:hover {
-      filter: brightness(1.15);
-      transform: scale(1.04);
-    }
-
-    /* Suggestion Chips */
     .chip-row {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
-      margin-top: 8px;
     }
 
     .chip {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      padding: 5px 10px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--surface-border);
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
       transition: all 0.15s;
     }
 
     .chip:hover {
       background: var(--surface-hover);
       color: var(--text);
-      border-color: var(--border-hover);
+      border-color: rgba(255, 255, 255, 0.15);
     }
 
-    /* Live Output Canvas */
-    .canvas-card {
-      display: none;
-      flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 14px;
+    .telemetry-row {
       display: flex;
-      flex-direction: column;
-      animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-      min-height: 200px;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .canvas-img {
-      width: 100%;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      margin-bottom: 10px;
-      display: block;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    }
-
-    .canvas-text {
-      flex: 1;
-      overflow-y: auto;
-      font-size: 12.5px;
-      line-height: 1.6;
-      color: #cbd5e1;
-      padding: 6px 2px;
-      max-height: 380px;
-    }
-
-    .canvas-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: auto;
-      padding-top: 10px;
-      border-top: 1px solid var(--border);
-    }
-
-    .btn-sm {
-      flex: 1;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 8px 12px;
-      border-radius: 7px;
+      justify-content: space-between;
+      align-items: center;
       font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
+      padding: 5px 0;
+    }
+
+    .telemetry-row:not(:last-child) {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .telemetry-label { color: var(--text-dim); }
+    .telemetry-val { font-weight: 600; color: #fff; }
+
+    .tag-ok {
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--success);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 5px;
+      gap: 6px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--surface-border);
+      color: var(--text);
+      cursor: pointer;
       transition: all 0.15s;
     }
 
-    .btn-sm:hover {
+    .btn:hover {
       background: var(--surface-hover);
-      border-color: var(--border-hover);
+      border-color: rgba(255, 255, 255, 0.18);
     }
 
-    .btn-sm.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: white;
+    .btn-primary {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: rgba(59, 130, 246, 0.35);
+      color: #93c5fd;
     }
 
-    .btn-sm.primary:hover {
-      filter: brightness(1.15);
+    .btn-primary:hover {
+      background: rgba(59, 130, 246, 0.25);
     }
 
-    /* Toast */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+      margin-top: 4px;
+    }
+
+    th {
+      text-align: left;
+      padding: 6px 8px;
+      color: var(--text-dim);
+      font-weight: 600;
+      border-bottom: 1px solid var(--surface-border);
+      text-transform: uppercase;
+      font-size: 10px;
+    }
+
+    td {
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-muted);
+    }
+
     .toast {
       position: fixed;
-      bottom: 16px;
+      bottom: 14px;
       left: 50%;
       transform: translateX(-50%) translateY(20px);
       background: #1e293b;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       color: white;
-      padding: 7px 16px;
+      padding: 6px 14px;
       border-radius: 20px;
-      font-size: 11.5px;
+      font-size: 11px;
       font-weight: 500;
       opacity: 0;
       pointer-events: none;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+      transition: all 0.2s;
       z-index: 100;
       white-space: nowrap;
     }
@@ -364,64 +275,89 @@
   </style>
 </head>
 <body>
-
-  <!-- Header -->
-  <div class="header">
-    <div class="brand-title">Chrome Assistant</div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      <button id="sandboxBtn" class="icon-btn" title="Launch Dedicated Sandbox Window" style="border-color:rgba(168,85,247,0.35);color:#c084fc;padding:4px 8px;font-size:11px;background:rgba(255,255,255,0.03);border-radius:6px;cursor:pointer;">
-        <span>🪟</span> Sandbox
-      </button>
-      <div id="statusPill" class="status-pill" title="Click to check connection">
-        <span class="pulse-dot"></span>
-        <span id="statusLabel">Bridge Active</span>
-      </div>
+  <header>
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-title">Bridge Side Panel</div>
     </div>
-  </div>
-
-  <!-- Active Target Page Card -->
-  <div class="page-card">
-    <div class="page-header">
-      <div class="page-meta">
-        <div id="pageDomain" class="domain-tag">...</div>
-        <div id="pageTitle" class="page-title">Loading page...</div>
-        <div id="pageUrl" class="page-url">...</div>
-      </div>
-      <button id="reloadBtn" class="reload-btn" title="Reload page">🔄</button>
+    <div id="statusPill" class="status-pill offline" title="Click to reconnect">
+      <span class="dot"></span>
+      <span id="statusLabel">Offline</span>
     </div>
-  </div>
+  </header>
 
-  <!-- Single Focused Command Bar -->
-  <div class="command-box">
-    <div class="input-wrapper">
-      <input type="text" id="commandInput" class="command-input" placeholder="Interact or enter URL (e.g. 'Submit', 'youtube.com')...">
-      <button id="submitBtn" class="action-submit-btn" title="Run">➔</button>
+  <!-- Active Tab Card -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Focused Tab</span>
+      <span id="reloadTabBtn" style="cursor:pointer; font-size:12px;" title="Reload tab">🔄</span>
     </div>
-
-    <!-- Clean Chips -->
+    <div id="pageTitle" class="page-title">Loading...</div>
+    <div id="pageUrl" class="page-url">...</div>
     <div class="chip-row">
-      <button id="chipNewTab" class="chip" title="Open task in new tab with same account">📑 +Tab</button>
-      <button id="chipSnapshot" class="chip">📸 Snapshot</button>
-      <button id="chipRead" class="chip">📄 Read</button>
-      <button id="chipHighlight" class="chip">✨ Highlight</button>
-      <button id="chipScroll" class="chip">⬇️ Scroll</button>
+      <div id="chipTabId" class="chip" title="Click to copy tab ID">Tab ID: — 📋</div>
+      <div id="chipWindowId" class="chip">Win: —</div>
     </div>
   </div>
 
-  <!-- Real-Time Interactive Canvas -->
-  <div id="canvasCard" class="canvas-card">
-    <img id="canvasImg" class="canvas-img" style="display:none;" alt="Preview">
-    <div id="canvasText" class="canvas-text" style="display:none;"></div>
-    <div class="canvas-actions">
-      <button id="copyCanvasBtn" class="btn-sm primary">Copy</button>
-      <button id="downloadCanvasBtn" class="btn-sm">Download</button>
-      <button id="closeCanvasBtn" class="btn-sm">Dismiss</button>
+  <!-- Agent Telemetry -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Agent Telemetry</span>
+      <span id="metricP50" style="font-size:11px; color:#38bdf8; font-weight:600;">—</span>
+    </div>
+    <div class="telemetry-row">
+      <span class="telemetry-label">Last Executed</span>
+      <span id="lastActionName" class="telemetry-val">Ready</span>
+    </div>
+    <div class="telemetry-row">
+      <span class="telemetry-label">Duration</span>
+      <span id="lastActionDuration" class="telemetry-val">—</span>
+    </div>
+    <div class="telemetry-row">
+      <span class="telemetry-label">Status</span>
+      <span id="lastActionStatus" class="tag-ok">OK</span>
     </div>
   </div>
 
-  <!-- Toast -->
-  <div id="toast" class="toast">Action completed</div>
+  <!-- Quick Pro Actions -->
+  <div class="btn-grid">
+    <button id="inspectBtn" class="btn btn-primary" title="Extract snapshot targets to clipboard">
+      <span>🔍</span> Inspect Tree
+    </button>
+    <button id="highlightBtn" class="btn" title="Toggle visual element tags on tab">
+      <span>🎯</span> Highlight
+    </button>
+    <button id="copyTokenBtn" class="btn" title="Copy Bearer token for CLI/MCP">
+      <span>🔑</span> Copy Token
+    </button>
+    <button id="reloadExtBtn" class="btn" title="Hot-reload extension">
+      <span>⚡</span> Reload Ext
+    </button>
+  </div>
 
+  <!-- Recent Agent Action Log -->
+  <div class="card" style="padding: 10px 12px; flex: 1;">
+    <div class="card-header">
+      <span class="card-title">Action Stream</span>
+      <span id="actionCount" style="font-size:10px; color:var(--text-dim);">0 actions</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Action</th>
+          <th>Status</th>
+          <th>RTT</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="streamBody">
+        <tr><td colspan="4" style="text-align:center; color:var(--text-dim); padding:16px;">Waiting for actions...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div id="toast" class="toast">Copied to clipboard</div>
   <script src="sidepanel.js"></script>
 </body>
 </html>

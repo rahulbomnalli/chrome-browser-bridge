@@ -14,6 +14,7 @@ let activeAgentWindowId = null;
 let activeAgentTabId = null;
 let activeDesignatedTabId = null;
 const MAX_RECONNECT_DELAY = 3000;
+let lastTelemetry = { action: 'Ready', ok: true, durationMs: 0, timestamp: Date.now() };
 
 const attachedTabs = new Set();
 const networkBuffers = new Map();
@@ -326,9 +327,11 @@ function connectToBridge() {
       try {
         const result = await handleAction(action, params);
         const durationMs = Math.round((performance.now() - startTime) * 10) / 10;
+        lastTelemetry = { action, ok: true, durationMs, timestamp: Date.now() };
         socket.send(JSON.stringify({ id, success: true, result, durationMs }));
       } catch (err) {
         const durationMs = Math.round((performance.now() - startTime) * 10) / 10;
+        lastTelemetry = { action, ok: false, error: err.message || String(err), durationMs, timestamp: Date.now() };
         socket.send(JSON.stringify({ id, success: false, error: err.message || String(err), durationMs }));
       }
     };
@@ -3549,6 +3552,28 @@ updateBadge(false);
 connectToBridge();
 chrome.runtime.onStartup.addListener(() => connectToBridge());
 chrome.runtime.onInstalled.addListener(() => connectToBridge());
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'get_bridge_status') {
+    sendResponse({
+      connected: !!(socket && socket.readyState === WebSocket.OPEN),
+      lastTelemetry,
+      token: (typeof self !== 'undefined' && self.__BRIDGE_TOKEN) || null
+    });
+    return true;
+  }
+  if (message?.type === 'reconnect_bridge') {
+    connectToBridge();
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (message?.type === 'reload_extension') {
+    setTimeout(() => chrome.runtime.reload(), 50);
+    sendResponse({ ok: true });
+    return true;
+  }
+  return false;
+});
 
 async function waitForPasswordClear(timeoutMs) {
   const clear = () => ![...document.querySelectorAll('input[type="password"]')].some(el => !el.closest('#__bridge_checkpoint_banner') && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');

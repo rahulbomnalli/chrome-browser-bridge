@@ -32,7 +32,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Chrome Assistant"
+    "default_title": "Chrome Browser Bridge"
   },
   "icons": {
     "16": "icon16.png",
