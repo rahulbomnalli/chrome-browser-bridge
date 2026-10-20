@@ -305,3 +305,47 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   fullMcp.stdin.end();
   await once(fullMcp, 'exit');
 });
+
+test('server auto-heals connection when extension connects during wait period', async t => {
+  const probe = http.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+
+  const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => server.kill());
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.once('exit', code => reject(new Error(`Bridge exited: ${code}`)));
+    server.stdout.on('data', chunk => { if (chunk.toString().includes('HTTP API:')) resolve(); });
+  });
+
+  const url = `http://127.0.0.1:${port}`;
+  const transport = createTransport(url);
+  t.after(() => transport.close());
+
+  // Dispatch action BEFORE extension connects
+  const actionPromise = transport.postAction('echo', { autoHeal: true });
+
+  // Simulate extension connecting 100ms later
+  await new Promise(r => setTimeout(r, 100));
+  const { getAuthToken } = require('../lib/token');
+  const token = getAuthToken();
+  const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${token}`, {
+    headers: { Origin: 'chrome-extension://mock-extension-id' }
+  });
+  await once(ws, 'open');
+  t.after(() => ws.terminate());
+  ws.on('message', raw => {
+    const msg = JSON.parse(raw);
+    if (!msg.action) return;
+    ws.send(JSON.stringify({ id: msg.id, success: true, result: { healed: true, params: msg.params } }));
+  });
+
+  // Action must resolve successfully without throwing connection error
+  const res = await actionPromise;
+  assert.equal(res.healed, true);
+  assert.equal(res.params.autoHeal, true);
+});
+

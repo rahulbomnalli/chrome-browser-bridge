@@ -370,15 +370,61 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+let chromeLaunchAttempted = 0;
+function tryLaunchChrome() {
+  const now = Date.now();
+  if (now - chromeLaunchAttempted < 30000) return;
+  chromeLaunchAttempted = now;
+  try {
+    const { exec } = require("node:child_process");
+    if (process.platform === "win32") {
+      exec("start chrome", { windowsHide: true });
+    } else if (process.platform === "darwin") {
+      exec('open -a "Google Chrome"', { windowsHide: true });
+    } else {
+      exec("google-chrome &", { windowsHide: true });
+    }
+  } catch (_) {}
+}
+
+async function waitForExtension(timeoutMs = 4000) {
+  if (extensionSocket && extensionSocket.readyState === 1 && extensionSocket.authenticated) {
+    return true;
+  }
+  const started = Date.now();
+  let chromeTriggered = false;
+  return new Promise(resolve => {
+    const check = setInterval(() => {
+      if (extensionSocket && extensionSocket.readyState === 1 && extensionSocket.authenticated) {
+        clearInterval(check);
+        resolve(true);
+        return;
+      }
+      const elapsed = Date.now() - started;
+      if (!chromeTriggered && elapsed > 1000) {
+        chromeTriggered = true;
+        tryLaunchChrome();
+      }
+      if (elapsed >= timeoutMs) {
+        clearInterval(check);
+        resolve(false);
+      }
+    }, 40);
+  });
+}
+
 async function executeAction(action, params = {}, timeoutMs) {
   const dynamicTimeout = timeoutMs || actionTimeout(params, action) + 5000;
   if (!extensionSocket || extensionSocket.readyState !== 1 || !extensionSocket.authenticated) {
-    throw new Error(
-      "Chrome browser is not connected to Bridge. " +
-      "Make sure Chrome has the 'Chrome Browser Bridge' extension loaded from: " +
-      path.join(__dirname, "extension") +
-      " and Developer Mode is enabled at chrome://extensions."
-    );
+    const connected = await waitForExtension(4000);
+    if (!connected) {
+      throw new Error(
+        "Chrome browser is not connected to Bridge. " +
+        "Make sure Chrome has the 'Chrome Browser Bridge' extension loaded from: " +
+        path.join(__dirname, "extension") +
+        " and Developer Mode is enabled at chrome://extensions."
+      );
+    }
   }
 
   // Monotonic counter — no string concat, no Date.now() overhead

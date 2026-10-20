@@ -374,7 +374,7 @@ function connectToBridge() {
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectAttempts++;
-  const delay = Math.min(250 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+  const delay = Math.min(80 * Math.pow(1.3, reconnectAttempts - 1), 1500);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectToBridge();
