@@ -21,8 +21,6 @@ Thumbs.db
 .idea/
 *.swp
 
-# Local agent personas & workspace overrides
-AGENTS.md
-GEMINI.md
+# Local workspace overrides
 .agents/rules/
 .agents/skills/custom-workflow/
