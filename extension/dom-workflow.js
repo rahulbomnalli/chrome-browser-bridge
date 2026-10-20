@@ -43,7 +43,7 @@ async function runDomWorkflow(options) {
     // Universal parameter resilience across all LLM models and websites:
     // A) If action is 'scroll' and no target is specified, default to scrollingElement or html/body
     if (step.action === 'scroll' && !step.selector && !step.role && !step.label && !step.placeholder) {
-      step.selector = 'html, body';
+      step.selector = 'body';
     }
     // B) If step.value is missing for type/select, but step.text is provided, map text -> value
     if (['type', 'select'].includes(step.action) && step.value === undefined && typeof step.text === 'string') {
@@ -205,6 +205,13 @@ async function runDomWorkflow(options) {
         if (exactText.length === 1) return exactText[0];
         if (exactText.length > 1) matches = exactText;
         else if (textMatches.length > 0) matches = textMatches;
+      }
+
+      // 1b. Innermost descendant priority (filter out wrapper containers like html, body, main, wrapper divs)
+      if (matches.length > 1) {
+        const innermost = matches.filter(el => !matches.some(child => child !== el && el.contains(child)));
+        if (innermost.length === 1) return innermost[0];
+        if (innermost.length > 1 && innermost.length < matches.length) matches = innermost;
       }
 
       // 2. Exact accessible name disambiguation
