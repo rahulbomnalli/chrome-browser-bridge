@@ -3,21 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chrome Bridge</title>
+  <title>Chrome Browser Bridge — Status</title>
   <style>
     :root {
       --bg: #090b10;
-      --surface: #121620;
-      --surface-hover: #181f2c;
-      --border: rgba(255, 255, 255, 0.08);
-      --border-hover: rgba(255, 255, 255, 0.16);
+      --surface: #11151f;
+      --surface-border: rgba(255, 255, 255, 0.08);
       --text: #f3f4f6;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
       --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.25);
       --success: #10b981;
-      --radius: 14px;
+      --error: #ef4444;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,7 +23,7 @@
     body {
       background-color: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      font-family: var(--font);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -34,16 +32,13 @@
     }
 
     header {
-      padding: 16px 36px;
+      padding: 16px 32px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid var(--border);
-      background: rgba(18, 22, 32, 0.7);
-      backdrop-filter: blur(16px);
-      position: sticky;
-      top: 0;
-      z-index: 10;
+      border-bottom: 1px solid var(--surface-border);
+      background: rgba(17, 21, 31, 0.8);
+      backdrop-filter: blur(12px);
     }
 
     .brand {
@@ -55,43 +50,41 @@
     .brand-icon {
       width: 32px;
       height: 32px;
-      border-radius: 9px;
-      background: linear-gradient(135deg, #2563eb, #6366f1);
-      color: white;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 15px;
-      box-shadow: 0 0 15px rgba(59, 130, 246, 0.35);
+      font-size: 16px;
+      color: #fff;
     }
 
     .brand-title {
-      font-size: 15.5px;
+      font-size: 15px;
       font-weight: 700;
       letter-spacing: -0.2px;
-      color: #ffffff;
     }
 
     .status-pill {
       display: inline-flex;
       align-items: center;
-      gap: 7px;
-      padding: 5px 12px;
+      gap: 8px;
+      padding: 6px 14px;
       border-radius: 9999px;
-      background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.25);
-      color: #34d399;
-      font-size: 11.5px;
+      font-size: 12px;
       font-weight: 600;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--success);
     }
 
     .status-pill.offline {
-      background: rgba(239, 68, 68, 0.08);
+      background: rgba(239, 68, 68, 0.1);
       border-color: rgba(239, 68, 68, 0.25);
-      color: #f87171;
+      color: var(--error);
     }
 
-    .pulse-dot {
+    .dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
@@ -101,651 +94,258 @@
 
     main {
       flex: 1;
-      padding: 36px;
-      max-width: 980px;
+      padding: 32px;
+      max-width: 1080px;
       margin: 0 auto;
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 24px;
     }
 
-    /* Page Card */
-    .page-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 20px 24px;
-      position: relative;
-      overflow: hidden;
-      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-    }
-
-    .page-card::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
-    }
-
-    .page-header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 16px;
     }
 
-    .domain-tag {
-      font-size: 11.5px;
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .card-label {
+      font-size: 12px;
       font-weight: 600;
-      color: #38bdf8;
+      color: var(--text-dim);
       text-transform: uppercase;
-      letter-spacing: 0.6px;
-      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
     }
 
-    .page-title {
-      font-size: 17px;
-      font-weight: 600;
-      color: #ffffff;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .page-url {
-      font-size: 12px;
-      color: var(--text-dim);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-top: 3px;
-    }
-
-    .reload-btn {
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      border-radius: 8px;
-      width: 34px;
-      height: 34px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      font-size: 14px;
-      transition: all 0.2s;
-      flex-shrink: 0;
-    }
-
-    .reload-btn:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-      transform: rotate(45deg);
-    }
-
-    /* Command Bar */
-    .command-box {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .input-wrapper {
-      position: relative;
-      display: flex;
-      align-items: center;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      transition: all 0.2s;
-    }
-
-    .input-wrapper:focus-within {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
-    }
-
-    .command-input {
-      width: 100%;
-      background: transparent;
-      border: none;
-      outline: none;
-      padding: 14px 48px 14px 18px;
-      color: var(--text);
-      font-size: 14px;
-    }
-
-    .command-input::placeholder {
-      color: var(--text-dim);
-    }
-
-    .submit-btn {
-      position: absolute;
-      right: 8px;
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 9px;
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      font-size: 13px;
-      transition: all 0.15s;
-    }
-
-    .submit-btn:hover {
-      filter: brightness(1.15);
-      transform: scale(1.04);
-    }
-
-    .chip-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    .chip {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      padding: 7px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.15s;
-    }
-
-    .chip:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-      border-color: var(--border-hover);
-    }
-
-    /* Live Output Canvas */
-    .canvas-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-      min-height: 280px;
-    }
-
-    .canvas-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 12px;
-    }
-
-    .canvas-title {
-      font-size: 12px;
+    .card-value {
+      font-size: 24px;
       font-weight: 700;
+      color: #fff;
+    }
+
+    .card-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.6px;
-      color: var(--text-dim);
+      margin-bottom: 12px;
     }
 
-    .canvas-content {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow-y: auto;
-      max-height: 520px;
-    }
-
-    .canvas-img {
-      max-width: 100%;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    }
-
-    .canvas-text {
+    table {
       width: 100%;
-      font-size: 13.5px;
-      line-height: 1.7;
-      color: #cbd5e1;
-      padding: 8px 4px;
-      white-space: pre-wrap;
-    }
-
-    .empty-state {
-      color: var(--text-dim);
+      border-collapse: collapse;
       font-size: 13px;
-      text-align: center;
     }
 
-    .canvas-actions {
-      display: flex;
-      gap: 10px;
-      margin-top: auto;
-      padding-top: 14px;
-      border-top: 1px solid var(--border);
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      color: var(--text-dim);
+      font-weight: 600;
+      border-bottom: 1px solid var(--surface-border);
+      font-size: 11.5px;
+      text-transform: uppercase;
     }
 
-    .btn-sm {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 8px 16px;
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--surface-border);
+      color: var(--text-muted);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .tag-ok {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--success);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .tag-fail {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(239, 68, 68, 0.12);
+      color: var(--error);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    pre {
+      background: #0d1017;
+      border: 1px solid var(--surface-border);
       border-radius: 8px;
+      padding: 14px;
       font-size: 12.5px;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.15s;
+      color: #e2e8f0;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
-    .btn-sm:hover {
-      background: var(--surface-hover);
-      border-color: var(--border-hover);
-    }
-
-    .btn-sm.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: white;
-    }
-
-    .btn-sm.primary:hover {
-      filter: brightness(1.15);
-    }
-
-    /* Toast */
-    .toast {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      background: #1e293b;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      color: white;
-      padding: 8px 20px;
-      border-radius: 20px;
-      font-size: 12.5px;
-      font-weight: 500;
-      opacity: 0;
-      pointer-events: none;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-      z-index: 100;
-    }
-
-    .toast.show {
-      opacity: 1;
+    footer {
+      padding: 16px 32px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-dim);
+      border-top: 1px solid var(--surface-border);
     }
   </style>
 </head>
 <body>
-
   <header>
     <div class="brand">
-      <div class="brand-icon">🌐</div>
-      <div class="brand-title">Chrome Bridge</div>
+      <div class="brand-icon">⚡</div>
+      <div class="brand-title">Chrome Browser Bridge</div>
     </div>
-    <div style="display:flex;align-items:center;gap:12px;">
-      <button class="btn-sm" onclick="launchSandbox()" style="display:inline-flex;align-items:center;gap:7px;background:rgba(168,85,247,0.15);border:1px solid rgba(168,85,247,0.45);color:#d8b4fe;font-weight:600;cursor:pointer;">
-        <span>🪟</span> Launch Sandbox Window
-      </button>
-      <div id="statusPill" class="status-pill">
-        <span class="pulse-dot"></span>
-        <span id="statusLabel">Checking...</span>
-      </div>
+    <div id="statusPill" class="status-pill offline">
+      <span class="dot"></span>
+      <span id="statusLabel">Checking Connection...</span>
     </div>
   </header>
 
   <main>
-    <!-- Target Page Card -->
-    <div class="page-card">
-      <div class="page-header">
-        <div style="flex:1; min-width:0;">
-          <div id="pageDomain" class="domain-tag">...</div>
-          <div id="pageTitle" class="page-title">Loading active page...</div>
-          <div id="pageUrl" class="page-url">...</div>
-        </div>
-        <button id="reloadBtn" class="reload-btn" title="Reload active tab" onclick="reloadActiveTab()">🔄</button>
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">Extension Link</div>
+        <div id="metricStatus" class="card-value">—</div>
+        <div id="metricSession" class="card-sub">Port 8765</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Median Latency (p50)</div>
+        <div id="metricP50" class="card-value">—</div>
+        <div id="metricSamples" class="card-sub">0 samples</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Tail Latency (p95)</div>
+        <div id="metricP95" class="card-value">—</div>
+        <div class="card-sub">Browser round-trip</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Success Rate</div>
+        <div id="metricRate" class="card-value">—</div>
+        <div id="metricTotal" class="card-sub">0 actions</div>
       </div>
     </div>
 
-    <!-- Focused Command Bar -->
-    <div class="command-box">
-      <div class="input-wrapper">
-        <input type="text" id="commandInput" class="command-input" placeholder="Interact or enter URL (e.g. 'Sign In', 'https://...', 'Submit')...">
-        <button id="submitBtn" class="submit-btn" onclick="handleCommand()">➔</button>
-      </div>
-
-      <div class="chip-row" style="flex-wrap: wrap;">
-        <button class="chip" onclick="openNewAgentTab()" style="border-color:rgba(59,130,246,0.35);color:#93c5fd;font-weight:600;"><span>📑</span> + New Task Tab</button>
-        <button class="chip" onclick="runVisualGrounding()" style="border-color:rgba(236,72,153,0.35);color:#f472b6;"><span>🎯</span> Visual Grounding</button>
-        <button class="chip" onclick="checkSecurityChallenge()" style="border-color:rgba(239,68,68,0.35);color:#fca5a5;"><span>🛡️</span> Check CAPTCHA</button>
-        <button class="chip" onclick="takeSnapshot()">📸 Snapshot</button>
-        <button class="chip" onclick="readPage()">📄 Read Page</button>
-        <button class="chip" onclick="highlightAllElements()">✨ Highlight Elements</button>
-        <button class="chip" onclick="openBatchFill()">⚡ Smart Form Fill</button>
-        <button class="chip" onclick="launchSandbox()">🪟 Sandbox Window</button>
-        <button class="chip" onclick="scrollPage()">⬇️ Scroll</button>
+    <div>
+      <div class="section-title">Recent Activity Telemetry</div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Status</th>
+              <th>Round-Trip</th>
+              <th>Browser Time</th>
+              <th>Payload</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="activityBody">
+            <tr><td colspan="6" style="text-align:center; color: var(--text-dim); padding: 24px;">No actions recorded yet</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <!-- Live Output Canvas -->
-    <div class="canvas-card">
-      <div class="canvas-header">
-        <span class="canvas-title">Live Output</span>
-      </div>
-
-      <div id="canvasContent" class="canvas-content">
-        <div class="empty-state">Use the command bar or click <strong>Snapshot</strong> to interact with Chrome.</div>
-      </div>
-
-      <div id="canvasActions" class="canvas-actions" style="display:none;">
-        <button id="downloadBtn" class="btn-sm primary" onclick="downloadImage()">Download Snapshot</button>
+    <div>
+      <div class="section-title">Agent Configuration Quickstart</div>
+      <div class="card">
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+          Configure this bridge in your AI agent (Antigravity IDE, Claude Code, Codex, or custom agents):
+        </p>
+        <pre><code>{
+  "mcpServers": {
+    "chrome-browser-bridge": {
+      "command": "node",
+      "args": ["c:/Users/91973/Desktop/chrome-browser-bridge/mcp-server.js"]
+    }
+  }
+}</code></pre>
       </div>
     </div>
   </main>
 
-  <div id="toast" class="toast">Action completed</div>
+  <footer>
+    Chrome Browser Bridge v1.0 • Native In-Extension Automation for AI Agents • Sub-50ms Execution
+  </footer>
 
   <script>
-    let currentTabId = null;
-    let latestScreenshotUrl = null;
-
-    function showToast(msg) {
-      const t = document.getElementById('toast');
-      t.textContent = msg;
-      t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 2200);
-    }
-
-    function getDomain(rawUrl) {
+    async function updateTelemetry() {
       try {
-        const u = new URL(rawUrl);
-        return u.hostname.replace(/^www\./, '');
-      } catch {
-        return rawUrl || '';
-      }
-    }
+        const [statusRes, metricsRes] = await Promise.all([
+          fetch('/status').then(r => r.json()).catch(() => null),
+          fetch('/metrics').then(r => r.json()).catch(() => null)
+        ]);
 
-    async function api(path, options = {}) {
-      try {
-        const res = await fetch(path, options);
-        return await res.json();
-      } catch (e) {
-        return { error: e.message };
-      }
-    }
+        const pill = document.getElementById('statusPill');
+        const label = document.getElementById('statusLabel');
 
-    async function checkStatus() {
-      const data = await api('/status');
-      const pill = document.getElementById('statusPill');
-      const label = document.getElementById('statusLabel');
-      if (data && data.connected) {
-        pill.className = 'status-pill';
-        label.textContent = 'Chrome Connected';
-      } else {
-        pill.className = 'status-pill offline';
-        label.textContent = 'Offline';
-      }
-    }
-
-    async function loadActiveTab() {
-      const data = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'active_tab' })
-      });
-      if (data && data.result) {
-        currentTabId = data.result.id;
-        document.getElementById('pageDomain').textContent = getDomain(data.result.url);
-        document.getElementById('pageTitle').textContent = data.result.title || 'Untitled';
-        document.getElementById('pageUrl').textContent = data.result.url || '';
-      }
-    }
-
-    async function reloadActiveTab() {
-      const btn = document.getElementById('reloadBtn');
-      btn.style.transform = 'rotate(360deg)';
-      await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reload', params: { tabId: currentTabId } })
-      });
-      showToast('Page reloaded');
-      setTimeout(() => { btn.style.transform = 'none'; }, 400);
-      await loadActiveTab();
-    }
-
-    async function handleCommand() {
-      const query = document.getElementById('commandInput').value.trim();
-      if (!query) return;
-
-      const isDomain = query.includes('.') && !query.includes(' ');
-      const isUrl = /^https?:\/\//i.test(query) || query.startsWith('localhost') || query.startsWith('127.0.0.1');
-
-      if (isUrl || isDomain) {
-        let finalUrl = query;
-        if (!/^https?:\/\//i.test(finalUrl)) {
-          finalUrl = finalUrl.startsWith('localhost') ? 'http://' + finalUrl : 'https://' + finalUrl;
-        }
-        await api('/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'navigate', params: { url: finalUrl, tabId: currentTabId } })
-        });
-        showToast('Navigating...');
-        document.getElementById('commandInput').value = '';
-        setTimeout(loadActiveTab, 1200);
-        return;
-      }
-
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'click', params: { target: query, tabId: currentTabId } })
-      });
-      if (res && res.result && res.result.found) {
-        showToast(`Clicked "${res.result.text || query}"`);
-        document.getElementById('commandInput').value = '';
-      } else {
-        showToast(`Could not find "${query}"`);
-      }
-    }
-
-    async function takeSnapshot() {
-      const content = document.getElementById('canvasContent');
-      content.innerHTML = '<div style="color:var(--text-dim);">Capturing snapshot...</div>';
-      const data = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'screenshot', params: { tabId: currentTabId } })
-      });
-      if (data && data.result && data.result.dataUrl) {
-        latestScreenshotUrl = data.result.dataUrl;
-        content.innerHTML = `<img src="${data.result.dataUrl}" class="canvas-img" alt="Snapshot"/>`;
-        document.getElementById('canvasActions').style.display = 'flex';
-        showToast('Snapshot ready');
-      } else {
-        content.innerHTML = '<div class="empty-state">Failed to capture screenshot</div>';
-      }
-    }
-
-    async function readPage() {
-      const content = document.getElementById('canvasContent');
-      content.innerHTML = '<div style="color:var(--text-dim);">Reading page content...</div>';
-      document.getElementById('canvasActions').style.display = 'none';
-
-      const data = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'read_page',
-          params: { tabId: currentTabId }
-        })
-      });
-
-      if (data && data.result && (data.result.content || data.result.headings?.length)) {
-        let html = `<div class="canvas-text"><strong style="color:#ffffff; font-size:15px;">${data.result.title || 'Page Content'}</strong><br><br>`;
-        if (data.result.headings && data.result.headings.length) {
-          html += data.result.headings.map(h => `<span style="color:#93c5fd;font-weight:600;">• ${h}</span>`).join('<br>') + '<br><br>';
-        }
-        if (data.result.content) {
-          html += data.result.content.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
-        }
-        html += `</div>`;
-        content.innerHTML = html;
-        showToast('Page content read');
-      } else {
-        content.innerHTML = '<div class="empty-state">No readable text found on page</div>';
-      }
-    }
-
-    async function scrollPage() {
-      await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'eval',
-          params: { tabId: currentTabId, code: 'window.scrollBy({ top: 600, behavior: "smooth" })' }
-        })
-      });
-      showToast('Scrolled');
-    }
-
-    function downloadImage() {
-      if (!latestScreenshotUrl) return;
-      const a = document.createElement('a');
-      a.href = latestScreenshotUrl;
-      a.download = `snapshot-${Date.now()}.png`;
-      a.click();
-      showToast('Downloaded!');
-    }
-
-    async function openNewAgentTab() {
-      const url = prompt('Enter URL for new task tab (or leave blank for search):', 'https://google.com');
-      if (url === null) return;
-      showToast('Opening new tab with your profile/account...');
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'new_tab', params: { url: url || 'about:blank' } })
-      });
-      if (res && res.result) {
-        showToast('📑 Dedicated agent tab ready!');
-        await loadActiveTab();
-      }
-    }
-
-    async function runVisualGrounding() {
-      showToast('Running visual grounding pass...');
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'visual_grounding', params: { tabId: currentTabId } })
-      });
-      if (res && res.result && res.result.screenshotDataUrl) {
-        latestScreenshotUrl = res.result.screenshotDataUrl;
-        const img = document.getElementById('canvasImg');
-        const content = document.getElementById('canvasContent');
-        content.innerHTML = `<img src="${res.result.screenshotDataUrl}" class="canvas-img" alt="Grounded Snapshot">`;
-        document.getElementById('canvasActions').style.display = 'flex';
-        showToast(`🎯 Grounded ${res.result.count} elements with [1], [2] tags!`);
-      } else {
-        showToast('Visual grounding completed');
-      }
-    }
-
-    async function checkSecurityChallenge() {
-      showToast('Scanning page for CAPTCHAs & 2FA...');
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'detect_challenge', params: { tabId: currentTabId } })
-      });
-      if (res && res.result) {
-        if (res.result.challengeDetected) {
-          alert(`🛡️ Challenge Detected: ${res.result.type}\n\nHuman-in-the-loop notification triggered in Chrome.`);
+        if (statusRes && statusRes.connected) {
+          pill.className = 'status-pill';
+          label.textContent = 'Chrome Connected';
+          document.getElementById('metricStatus').textContent = 'Online';
+          document.getElementById('metricStatus').style.color = '#10b981';
+          document.getElementById('metricSession').textContent = `Gen #${statusRes.sessionGeneration || 1} • Port ${statusRes.port}`;
         } else {
-          showToast('✓ Clean page: No CAPTCHAs or security barriers');
+          pill.className = 'status-pill offline';
+          label.textContent = 'Offline (Awaiting Extension)';
+          document.getElementById('metricStatus').textContent = 'Offline';
+          document.getElementById('metricStatus').style.color = '#ef4444';
+          document.getElementById('metricSession').textContent = 'Port 8765';
         }
-      }
-    }
 
-    async function launchSandbox() {
-      showToast('Launching dedicated sandbox window...');
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sandbox_window', params: { focus: false } })
-      });
-      if (res && res.result) {
-        showToast('🪟 Sandbox window ready! AI agent isolated.');
-        const content = document.getElementById('canvasContent');
-        content.innerHTML = `<div class="canvas-text"><strong style="color:#c084fc;font-size:15px;">🪟 Dedicated Agent Sandbox Active</strong><br><br>Window ID: ${res.result.windowId} | Tab ID: ${res.result.tabId}<br><br><span style="color:#94a3b8;">${res.result.message}</span></div>`;
-        document.getElementById('canvasActions').style.display = 'none';
-        await loadActiveTab();
-      } else {
-        showToast('Failed to open sandbox window');
-      }
-    }
-
-    async function highlightAllElements() {
-      showToast('Highlighting interactive elements...');
-      const res = await api('/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'highlight_elements', params: { tabId: currentTabId } })
-      });
-      if (res && res.result) {
-        showToast(`✨ Highlighted ${res.result.count} interactive elements!`);
-      } else {
-        showToast('Could not highlight elements on this page');
-      }
-    }
-
-    async function openBatchFill() {
-      const sample = prompt('Enter field key-value pairs (JSON format):\nExample: {"Email": "user@example.com", "Password": "mypassword"}', '{"Search": "DeepMind"}');
-      if (!sample) return;
-      try {
-        const fields = JSON.parse(sample);
-        showToast('⚡ Running fast smart form fill...');
-        const res = await api('/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'batch_fill', params: { fields, tabId: currentTabId } })
-        });
-        if (res && res.result && res.result.filled) {
-          showToast(`⚡ Filled ${res.result.filled.length} fields in < 50ms!`);
-        } else {
-          showToast('Smart form fill executed');
+        if (statusRes && statusRes.latencyMs) {
+          document.getElementById('metricP50').textContent = statusRes.latencyMs.p50 !== null ? `${statusRes.latencyMs.p50} ms` : '—';
+          document.getElementById('metricP95').textContent = statusRes.latencyMs.p95 !== null ? `${statusRes.latencyMs.p95} ms` : '—';
+          document.getElementById('metricSamples').textContent = `${statusRes.latencyMs.samples || 0} samples`;
         }
-      } catch (err) {
-        alert('Invalid JSON: ' + err.message);
-      }
+
+        if (metricsRes && metricsRes.totals) {
+          const rate = metricsRes.totals.sampledSuccessRate !== null ? `${Math.round(metricsRes.totals.sampledSuccessRate * 100)}%` : '—';
+          document.getElementById('metricRate').textContent = rate;
+          document.getElementById('metricTotal').textContent = `${metricsRes.totals.completed} total actions`;
+
+          const tbody = document.getElementById('activityBody');
+          const actions = (metricsRes.actions || []).slice(-10).reverse();
+
+          if (actions.length > 0) {
+            tbody.innerHTML = actions.map(a => `
+              <tr>
+                <td style="font-weight:600; color:#fff;">${a.action}</td>
+                <td><span class="${a.ok ? 'tag-ok' : 'tag-fail'}">${a.ok ? 'OK' : 'FAIL'}</span></td>
+                <td>${a.roundTripMs ? a.roundTripMs.toFixed(1) + ' ms' : '—'}</td>
+                <td>${a.browserMs ? a.browserMs.toFixed(1) + ' ms' : '—'}</td>
+                <td>${a.requestBytes ? Math.round(a.requestBytes / 1024 * 10) / 10 + ' KB' : '—'}</td>
+                <td style="color:var(--text-dim);">${a.startedAt ? new Date(a.startedAt).toLocaleTimeString() : '—'}</td>
+              </tr>
+            `).join('');
+          }
+        }
+      } catch (_) {}
     }
 
-    document.getElementById('commandInput')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') handleCommand();
-    });
-
-    setInterval(checkStatus, 2500);
-    checkStatus();
-    loadActiveTab();
+    setInterval(updateTelemetry, 2500);
+    updateTelemetry();
   </script>
 </body>
 </html>
