@@ -74,28 +74,45 @@ async function getOrCreateAgentWindow(url = "about:blank") {
     }
   }
 
-  // Get user's current window so we never disturb their focus if desired
-  let userFocusedWindowId = null;
+  // Attempt dedicated window creation if supported by environment
+  let newWin = null;
   try {
-    const lastFocused = await chrome.windows.getLastFocused();
-    userFocusedWindowId = lastFocused?.id;
-  } catch {}
-
-  const newWin = await chrome.windows.create({
-    url,
-    type: "normal",
-    width: 1280,
-    height: 900,
-    focused: true
-  });
-  activeAgentWindowId = newWin.id;
-  const winTabs = await chrome.tabs.query({ windowId: newWin.id });
-  const firstTab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
-  if (firstTab) {
-    activeAgentTabId = firstTab.id;
-    activeDesignatedTabId = firstTab.id;
+    if (chrome.windows?.create) {
+      newWin = await chrome.windows.create({
+        url,
+        type: "normal",
+        width: 1280,
+        height: 900,
+        focused: true
+      });
+    }
+  } catch (_) {
+    // Window creation disallowed or unsupported in current environment (e.g., Owl, headless, or policy)
   }
-  return { windowId: newWin.id, existing: false, tabs: winTabs || [] };
+
+  if (newWin) {
+    activeAgentWindowId = newWin.id;
+    const winTabs = await chrome.tabs.query({ windowId: newWin.id });
+    const firstTab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
+    if (firstTab) {
+      activeAgentTabId = firstTab.id;
+      activeDesignatedTabId = firstTab.id;
+    }
+    return { windowId: newWin.id, existing: false, tabs: winTabs || [] };
+  }
+
+  // Universal Fallback: Use standard tab in existing window without failing
+  try {
+    const tab = await chrome.tabs.create({ url, active: true });
+    activeAgentTabId = tab.id;
+    activeDesignatedTabId = tab.id;
+    return { windowId: tab.windowId, existing: true, tabs: [tab] };
+  } catch (_) {
+    const fallbackTab = await chrome.tabs.create({ active: true });
+    activeAgentTabId = fallbackTab.id;
+    activeDesignatedTabId = fallbackTab.id;
+    return { windowId: fallbackTab.windowId, existing: true, tabs: [fallbackTab] };
+  }
 }
 
 // Update designated tab when user or agent switches active tab
@@ -635,7 +652,15 @@ async function getTargetTab(tabId) {
   }
   if (activeTab) return activeTab;
   if (allTabs.length > 0) return allTabs[0];
-  throw new Error("No browser tabs available.");
+
+  // Self-Healing: When no tabs exist in the browser, automatically create an active tab
+  try {
+    const autoTab = await chrome.tabs.create({ url: "about:blank", active: true });
+    activeDesignatedTabId = autoTab.id;
+    return autoTab;
+  } catch (_) {
+    throw new Error("No browser tabs available.");
+  }
 }
 
 // LIVE AUTONOMOUS AGENT HUD - Realtime on-page status, live timer, and breadcrumbs
@@ -1029,7 +1054,15 @@ async function handleActionInner(action, params) {
       return { pong: true, time: Date.now(), attachedTabs: Array.from(attachedTabs) };
 
     case "tabs": {
-      const tabs = await chrome.tabs.query({});
+      let tabs = await chrome.tabs.query({});
+      if (!tabs || tabs.length === 0) {
+        try {
+          const autoTab = await chrome.tabs.create({ url: "about:blank", active: true });
+          tabs = [autoTab];
+        } catch (_) {
+          tabs = [];
+        }
+      }
       return tabs.map(t => ({
         id: t.id,
         index: t.index,
@@ -1056,16 +1089,19 @@ async function handleActionInner(action, params) {
     }
 
     case "new_tab": {
-      const agentWin = await getOrCreateAgentWindow(params.url || "about:blank");
       let newTab;
-      if (agentWin.existing) {
+      try {
         newTab = await chrome.tabs.create({
-          windowId: agentWin.windowId,
           url: params.url || "about:blank",
           active: params.active !== false
         });
-      } else {
-        newTab = agentWin.tabs[0];
+      } catch (_) {
+        const agentWin = await getOrCreateAgentWindow(params.url || "about:blank");
+        newTab = agentWin.existing ? await chrome.tabs.create({
+          windowId: agentWin.windowId,
+          url: params.url || "about:blank",
+          active: params.active !== false
+        }) : agentWin.tabs[0];
       }
       activeAgentTabId = newTab.id;
       activeDesignatedTabId = newTab.id;
@@ -1084,37 +1120,72 @@ async function handleActionInner(action, params) {
     }
 
     case "new_window": {
-      const newWin = await chrome.windows.create({
-        url: params.url || "about:blank",
-        type: "normal",
-        width: params.width || 1280,
-        height: params.height || 900,
-        focused: params.focused !== false
-      });
-      activeAgentWindowId = newWin.id;
-      const winTabs = await chrome.tabs.query({ windowId: newWin.id });
-      const winTab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
-      if (winTab) {
-        activeAgentTabId = winTab.id;
-        activeDesignatedTabId = winTab.id;
-        if (params.url && params.url !== "about:blank" && params.waitForLoad !== false) {
-          await waitForPageLoad(winTab.id, params.timeoutMs || 2500);
+      let newWin = null;
+      try {
+        if (chrome.windows?.create) {
+          newWin = await chrome.windows.create({
+            url: params.url || "about:blank",
+            type: "normal",
+            width: params.width || 1280,
+            height: params.height || 900,
+            focused: params.focused !== false
+          });
         }
+      } catch (_) {
+        // Fallback for Owl/headless where windows.create is disallowed
       }
-      const loaded = winTab ? await chrome.tabs.get(winTab.id) : {};
+
+      if (newWin) {
+        activeAgentWindowId = newWin.id;
+        const winTabs = await chrome.tabs.query({ windowId: newWin.id });
+        const winTab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
+        if (winTab) {
+          activeAgentTabId = winTab.id;
+          activeDesignatedTabId = winTab.id;
+          if (params.url && params.url !== "about:blank" && params.waitForLoad !== false) {
+            await waitForPageLoad(winTab.id, params.timeoutMs || 2500);
+          }
+        }
+        const loaded = winTab ? await chrome.tabs.get(winTab.id) : {};
+        let snap = null;
+        if (params.returnSnap !== false && params.url && params.url !== "about:blank" && winTab) {
+          try {
+            const snapRes = await handleActionInner("snap", { tabId: winTab.id });
+            snap = snapRes.compact;
+          } catch {}
+        }
+        return {
+          windowId: newWin.id,
+          tabId: winTab ? winTab.id : null,
+          title: loaded.title || "",
+          url: loaded.url || params.url || "about:blank",
+          isNewWindow: true,
+          snapshot: snap
+        };
+      }
+
+      // Universal Fallback: create tab when window creation is disallowed in the environment
+      const tab = await chrome.tabs.create({ url: params.url || "about:blank", active: params.focused !== false });
+      activeAgentTabId = tab.id;
+      activeDesignatedTabId = tab.id;
+      if (params.url && params.url !== "about:blank" && params.waitForLoad !== false) {
+        await waitForPageLoad(tab.id, params.timeoutMs || 2500);
+      }
+      const loaded = await chrome.tabs.get(tab.id);
       let snap = null;
-      if (params.returnSnap !== false && params.url && params.url !== "about:blank" && winTab) {
+      if (params.returnSnap !== false && params.url && params.url !== "about:blank") {
         try {
-          const snapRes = await handleActionInner("snap", { tabId: winTab.id });
+          const snapRes = await handleActionInner("snap", { tabId: loaded.id });
           snap = snapRes.compact;
         } catch {}
       }
       return {
-        windowId: newWin.id,
-        tabId: winTab ? winTab.id : null,
+        windowId: tab.windowId,
+        tabId: tab.id,
         title: loaded.title || "",
         url: loaded.url || params.url || "about:blank",
-        isNewWindow: true,
+        isNewWindow: false,
+        isWindowFallback: true,
         snapshot: snap
       };
     }
@@ -1146,29 +1217,57 @@ async function handleActionInner(action, params) {
         } else {
           isReusedTab = true;
         }
-      } else {
-        // 2. Default & Dedicated Window Mode: Always execute in the dedicated agent window
-        const agentWin = await getOrCreateAgentWindow(params.url);
-        if (agentWin.existing) {
-          // If dedicated window already exists, navigate its active tab or create tab in it
-          const winTabs = await chrome.tabs.query({ windowId: agentWin.windowId, active: true });
-          tab = (winTabs && winTabs.length > 0) ? winTabs[0] : null;
-          if (tab) {
+      } else if (params.reuseExisting !== false) {
+        // 2. Intelligent Tab Reuse: check if matching tab/domain is already open
+        try {
+          const allTabs = await chrome.tabs.query({});
+          let destDomain = null;
+          try { destDomain = new URL(params.url).hostname.replace(/^www\./, ''); } catch (_) {}
+
+          let match = allTabs.find(t => t.url === params.url);
+          if (!match && destDomain) {
+            match = allTabs.find(t => {
+              try { return new URL(t.url).hostname.replace(/^www\./, '') === destDomain; } catch { return false; }
+            });
+          }
+          if (match) {
+            tab = match;
             if (tab.url !== params.url) {
               await chrome.tabs.update(tab.id, { url: params.url, active: true });
             } else {
               isReusedTab = true;
+              await chrome.tabs.update(tab.id, { active: true });
             }
-          } else {
-            tab = await chrome.tabs.create({ windowId: agentWin.windowId, url: params.url, active: true });
+            if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
           }
-        } else {
-          tab = agentWin.tabs[0];
-          openedNewWindow = true;
-        }
-        if (!tab) throw new Error("Failed to find tab in agent window");
-        activeAgentTabId = tab.id;
+        } catch (_) {}
       }
+
+      // 3. If no matching tab found, check if active tab is blank/idle to avoid opening extra tabs
+      if (!tab) {
+        try {
+          const curr = await getTargetTab();
+          if (curr && (curr.url === 'about:blank' || curr.url?.startsWith('chrome://newtab') || !curr.url)) {
+            await chrome.tabs.update(curr.id, { url: params.url, active: true });
+            tab = curr;
+          }
+        } catch (_) {}
+      }
+
+      // 4. Default: create tab in current or dedicated window with resilient fallback
+      if (!tab) {
+        try {
+          tab = await chrome.tabs.create({ url: params.url, active: true });
+        } catch (_) {
+          const agentWin = await getOrCreateAgentWindow(params.url);
+          tab = agentWin.existing ? await chrome.tabs.create({ windowId: agentWin.windowId, url: params.url, active: true }) : agentWin.tabs[0];
+          openedNewWindow = !agentWin.existing;
+        }
+      }
+
+      if (!tab) throw new Error("Failed to navigate or find active tab");
+      activeAgentTabId = tab.id;
+      activeDesignatedTabId = tab.id;
 
       if (!isReusedTab && params.waitForLoad !== false) {
         await waitForPageLoad(tab.id, params.timeoutMs || 2500, params.url);
@@ -1778,29 +1877,33 @@ async function handleActionInner(action, params) {
     case "sandbox_window":
     case "launch_sandbox": {
       const url = params.url || "about:blank";
-      let userFocusedWindowId = null;
+      let newWindow = null;
       try {
-        const lastFocused = await chrome.windows.getLastFocused();
-        userFocusedWindowId = lastFocused?.id;
-      } catch {}
-
-      const newWindow = await chrome.windows.create({
-        url,
-        type: "normal",
-        width: params.width || 1280,
-        height: params.height || 900,
-        focused: false
-      });
-
-      // Safely query the tab in the new window (newWindow.tabs can be undefined in MV3)
-      const windowTabs = await chrome.tabs.query({ windowId: newWindow.id });
-      const sandboxTab = (windowTabs && windowTabs.length > 0) ? windowTabs[0] : null;
-
-      if (!sandboxTab) {
-        throw new Error("Failed to find tab in newly created sandbox window");
+        if (chrome.windows?.create) {
+          newWindow = await chrome.windows.create({
+            url,
+            type: "normal",
+            width: params.width || 1280,
+            height: params.height || 900,
+            focused: false
+          });
+        }
+      } catch (_) {
+        // Fallback when windows.create is disallowed (e.g. Owl sandbox, headless, or permissions)
       }
 
-      activeSandboxWindowId = newWindow.id;
+      let sandboxTab = null;
+      if (newWindow) {
+        activeSandboxWindowId = newWindow.id;
+        const windowTabs = await chrome.tabs.query({ windowId: newWindow.id });
+        sandboxTab = (windowTabs && windowTabs.length > 0) ? windowTabs[0] : null;
+      }
+
+      if (!sandboxTab) {
+        // Fallback: create tab in current window without failing
+        sandboxTab = await chrome.tabs.create({ url, active: params.focus === true });
+      }
+
       activeSandboxTabId = sandboxTab.id;
       activeDesignatedTabId = sandboxTab.id;
 
