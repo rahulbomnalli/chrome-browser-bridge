@@ -97,6 +97,16 @@ async function runDomWorkflow(options) {
     }
   }
   const normalize = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  function composedContains(parent, child) {
+    if (!parent || !child) return false;
+    if (typeof parent.contains === 'function' && parent.contains(child)) return true;
+    let curr = child;
+    while (curr) {
+      if (curr === parent) return true;
+      curr = curr.assignedSlot || curr.parentNode || curr.host || null;
+    }
+    return false;
+  }
   let rootIndex = globalThis.__bridgeRootIndex;
   if (!rootIndex || rootIndex.document !== document) {
     rootIndex?.observer?.disconnect();
@@ -207,42 +217,49 @@ async function runDomWorkflow(options) {
         else if (textMatches.length > 0) matches = textMatches;
       }
 
-      // 1b. Innermost descendant priority (filter out wrapper containers like html, body, main, wrapper divs)
+      // 2. Direct interactive control priority (avoids 1px screen-reader spans or custom element host wrappers)
+      if (step.action === 'click' || step.role === 'button') {
+        const directButtons = matches.filter(el => {
+          const tag = el.tagName?.toLowerCase();
+          return tag === 'button' || tag === 'a' || el.getAttribute?.('role') === 'button' || el.hasAttribute?.('tabindex') || tag === 'summary';
+        });
+        if (directButtons.length === 1) return directButtons[0];
+        if (directButtons.length > 1 && directButtons.length < matches.length) matches = directButtons;
+      } else if (step.action === 'type' || step.role === 'textbox') {
+        const directInputs = matches.filter(el => {
+          const tag = el.tagName?.toLowerCase();
+          return tag === 'input' || tag === 'textarea' || el.isContentEditable || el.getAttribute?.('role') === 'textbox';
+        });
+        if (directInputs.length === 1) return directInputs[0];
+        if (directInputs.length > 1 && directInputs.length < matches.length) matches = directInputs;
+      }
+
+      // 3. Innermost descendant priority with shadow DOM traversal (filters out wrapper containers)
       if (matches.length > 1) {
-        const innermost = matches.filter(el => !matches.some(child => child !== el && el.contains(child)));
+        const innermost = matches.filter(el => !matches.some(child => child !== el && composedContains(el, child)));
         if (innermost.length === 1) return innermost[0];
         if (innermost.length > 1 && innermost.length < matches.length) matches = innermost;
       }
 
-      // 2. Exact accessible name disambiguation
+      // 4. Exact accessible name disambiguation
       if (step.name !== undefined) {
         const exactName = matches.filter(el => normalize(accessibleName(el)) === normalize(step.name));
         if (exactName.length === 1) return exactName[0];
         if (exactName.length > 1) matches = exactName;
       }
 
-      // 3. Active open modal/dialog priority
+      // 5. Active open modal/dialog priority
       const openModal = document.querySelector?.('dialog[open], [role="dialog"], .modal.show, [aria-modal="true"]');
       if (openModal) {
-        const inModal = matches.filter(el => openModal.contains(el));
+        const inModal = matches.filter(el => composedContains(openModal, el));
         if (inModal.length === 1) return inModal[0];
         if (inModal.length > 1) matches = inModal;
       }
 
-      // 4. Interactive enabled priority (filter out disabled/aria-disabled)
-      const interactive = matches.filter(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true' && !el.readOnly);
+      // 6. Interactive enabled priority (filter out disabled/aria-disabled)
+      const interactive = matches.filter(el => !el.disabled && el.getAttribute?.('aria-disabled') !== 'true' && !el.readOnly);
       if (interactive.length === 1) return interactive[0];
       if (interactive.length > 1 && interactive.length < matches.length) matches = interactive;
-
-      // 5. Button tag specificity over wrapper divs
-      if (step.action === 'click' || step.role === 'button') {
-        const directButtons = matches.filter(el => {
-          const tag = el.tagName?.toLowerCase();
-          return tag === 'button' || tag === 'a' || el.getAttribute('role') === 'button' || el.hasAttribute('tabindex');
-        });
-        if (directButtons.length === 1) return directButtons[0];
-        if (directButtons.length > 1) matches = directButtons;
-      }
     }
 
     if (matches.length > 1) {
@@ -310,8 +327,13 @@ async function runDomWorkflow(options) {
           const rect = el.getBoundingClientRect();
           const root = el.getRootNode?.() || document;
           const hit = (root.elementFromPoint ? root : document).elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          const isHitOk = Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el) ||
-            (root.host && (hit === root.host || hit.contains(root.host) || root.host.contains(hit)))));
+          const interactiveAncestor = el.closest?.('button, a[href], [role="button"], label, summary');
+          const hitInteractiveAncestor = hit?.closest?.('button, a[href], [role="button"], label, summary');
+          const isHitOk = Boolean(hit && (
+            hit === el || composedContains(el, hit) || composedContains(hit, el) ||
+            (interactiveAncestor && (hit === interactiveAncestor || composedContains(interactiveAncestor, hit) || interactiveAncestor === hitInteractiveAncestor)) ||
+            (root.host && (hit === root.host || composedContains(hit, root.host) || composedContains(root.host, hit)))
+          ));
           if (!isHitOk) throw new Error(`Obstructed target: ${targetName(step)}`);
           el.click();
           break;
