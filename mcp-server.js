@@ -19,7 +19,7 @@ function recordMcpToolCall(name, requestId, durationMs, ok) {
 const TOOLS = [
   {
     name: 'chrome_workflow',
-    description: 'Universal autonomous browser execution engine: execute cross-page navigation, tabs, form filling, bounded loops (for_each, while, until), branching (if/else), structured scraping (extract_collection), scrolling, downloads, uploads, {{inputs.x}}/{{results.id.path}} bindings, and final verify in ONE single compound call. Runs entirely locally inside Chrome without intermediate AI round trips. Never replay completed submissions. saveAs/name reuses a verified plan.',
+    description: 'PRIMARY BROWSER WORKFLOW ENGINE: Universal autonomous browser execution engine for cross-page navigation, tabs, form filling, bounded loops (for_each, while, until), branching (if/else), structured scraping (extract_collection), scrolling, downloads, uploads, {{inputs.x}}/{{results.id.path}} bindings, and final verify in ONE single compound call. Runs entirely locally inside Chrome without intermediate AI round trips. Never replay completed submissions. saveAs/name reuses a verified plan.',
     inputSchema: {
       type: 'object', properties: {
         tabId: { type: 'integer' }, timeoutMs: { type: 'integer', minimum: 1, maximum: 600000 },
@@ -49,7 +49,7 @@ const TOOLS = [
 
   {
     name: 'chrome_act',
-    description: 'One-call plan for a known same-page task. Batch click, type, select, wait, assert, and extract steps against unique targets; skip snapshots when targets are known. Stops on ambiguity or failure and returns completed steps. Use chrome_workflow for navigation or conditional stages.',
+    description: 'PRIMARY BROWSER ACTION TOOL: One-call plan for a known same-page task. Batch click, type, select, wait, assert, and extract steps against unique targets; skip snapshots when targets are known. Stops on ambiguity or failure and returns completed steps. Use chrome_workflow for navigation or conditional stages.',
     inputSchema: {
       type: 'object', properties: {
         tabId: { type: 'integer' },
@@ -104,7 +104,7 @@ const TOOLS = [
   },
   {
     name: "chrome_smart_navigate",
-    description: "High-speed intelligent navigation: Reuses an existing open tab if the target website/domain is already open in Chrome (eliminating window creation and preserving logins/SPA state), or navigates the active tab without launching duplicate windows.",
+    description: "PRIMARY BROWSER NAVIGATION TOOL: High-speed intelligent navigation. Reuses an existing open tab if the target website/domain is already open in Chrome (eliminating window creation and preserving logins/SPA state), or navigates the active tab without launching duplicate windows.",
     inputSchema: {
       type: "object",
       properties: {
@@ -799,7 +799,7 @@ async function handleToolCall(name, args) {
       const res = await postAction("navigate", {
         url: args.url,
         tabId: args.tabId,
-        forceNewWindow: args.forceNewWindow !== false,
+        forceNewWindow: args.forceNewWindow === true,
         returnSnap: true
       });
       return toolData(res);
@@ -1077,7 +1077,9 @@ const COMPACT_TOOLS = new Set(['chrome_status', 'chrome_list_tabs', 'chrome_smar
   'chrome_snap', 'chrome_act', 'chrome_workflow', 'browser.execute_workflow', 'chrome_pipeline', 'chrome_extract_many', 'chrome_page_fetch', 'chrome_page_fetch_many', 'chrome_api_sequence', 'chrome_api_catalog', 'chrome_run_page_script', 'chrome_evaluate', 'chrome_cdp_command', 'chrome_cdp_batch', 'chrome_debug_bundle',
   'chrome_read_page', 'chrome_wait_for_user', 'chrome_screenshot', 'whatsapp_send_message',
   'browser.execute_plan', 'browser.cancel_plan', 'browser.plan_status', 'browser.metrics',
-  'chrome_parallel_scrape', 'chrome_save_macro', 'chrome_run_macro', 'chrome_watch']);
+  'chrome_parallel_scrape', 'chrome_save_macro', 'chrome_run_macro', 'chrome_watch',
+  'chrome_switch_tab', 'chrome_new_tab', 'chrome_navigate', 'chrome_snapshot', 'chrome_click',
+  'chrome_type', 'chrome_scroll', 'chrome_select', 'chrome_wait_for_element', 'chrome_dismiss_overlays']);
 
 const TOOL_PROFILE = process.env.BRIDGE_TOOL_PROFILE || 'fast';
 const exposedTools = require('./lib/tool-profile').selectToolProfile(TOOLS, COMPACT_TOOLS, TOOL_PROFILE);

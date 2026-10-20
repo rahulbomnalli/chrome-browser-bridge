@@ -1,5 +1,7 @@
 # Execution and Antigravity latency audit
 
+This is a historical audit snapshot. Its tool-count references describe the catalog at the time of those measurements; the current default `fast` profile exposes 33 tools.
+
 ## What was slowing the task
 
 Total latency is model planning + agent/tool exchanges + bridge dispatch + Chrome work + website response. Optimizing a few milliseconds of dispatch cannot eliminate seconds spent on repeated model turns.
@@ -77,7 +79,7 @@ node cli.js profile
 
 ## Task-focused defaults (not tested)
 
-The server now defaults to `fast`, and generated Antigravity, Claude, and Codex configurations select it explicitly. It exposes fifteen task-oriented tools, including parallel URL research, batched extraction/API calls, validated idempotent plans, checkpoints, cancellation and bounded metrics, while removing overlapping pipeline/macro choices; uncommon script, CDP, screenshot and monitoring tools remain available through `compact` or `full`. Initialization guidance and skills prioritize complete local plans and batched operations.
+At the time of this audit, the server defaulted to `fast`, and generated Antigravity, Claude, and Codex configurations selected it explicitly. That profile then exposed fifteen task-oriented tools, including parallel URL research, batched extraction/API calls, validated idempotent plans, checkpoints, cancellation and bounded metrics, while removing overlapping pipeline/macro choices. The current `fast` profile has since expanded to 33 tools, including generic tab and page interaction controls. Initialization guidance and skills prioritize complete local plans and batched operations.
 
 No tests, builds, browser checks, or benchmarks were run for these changes, as requested. Existing clients must regenerate or edit their MCP profile to `fast` and restart/refresh the MCP connection to load the new environment and tool catalog; saved conversations can retain older instructions.
 

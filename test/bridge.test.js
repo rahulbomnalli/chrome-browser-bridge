@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const readline = require('node:readline');
 const path = require('node:path');
@@ -9,6 +9,23 @@ const WebSocket = require('ws');
 const { createTransport, actionTimeout } = require('../lib/transport');
 const { clientConfig } = require('../lib/client-config');
 const root = path.resolve(__dirname, '..');
+
+test('default fast profile exposes all universal browser controls', () => {
+  const response = spawnSync(process.execPath, ['mcp-server.js'], {
+    cwd: root,
+    encoding: 'utf8',
+    input: `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`
+  });
+  assert.equal(response.status, 0, response.stderr);
+  const result = JSON.parse(response.stdout.trim()).result;
+  const names = new Set(result.tools.map(tool => tool.name));
+  assert.equal(result.tools.length, 33);
+  for (const name of [
+    'chrome_switch_tab', 'chrome_new_tab', 'chrome_navigate', 'chrome_snapshot', 'chrome_click',
+    'chrome_type', 'chrome_scroll', 'chrome_select', 'chrome_wait_for_element', 'chrome_dismiss_overlays'
+  ]) assert.ok(names.has(name), `${name} should be in the default fast profile`);
+  assert.ok(!names.has('whatsapp_send_message'));
+});
 
 test('client configs use absolute executable and entry paths', () => {
   for (const client of ['claude', 'antigravity']) {
@@ -121,10 +138,16 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   await once(ws2, 'open');
   t.after(() => ws2.terminate());
   let whatsappTimeout;
+  const routedActions = [];
   ws2.on('message', raw => {
     const msg = JSON.parse(raw);
+    routedActions.push({ action: msg.action, params: msg.params });
     if (msg.action === 'whatsapp_send') whatsappTimeout = msg.params.timeoutMs;
-    const result = msg.action === 'api_catalog' ? { tabId: msg.params.tabId || 7, total: 1, count: 1, requests: [{ method: 'GET', url: '/api/users' }] }
+    const result = msg.action === 'click' && msg.params.selector === '#expected-failure'
+      ? { ok: false }
+      : ['switch_tab', 'new_tab', 'navigate', 'snapshot', 'click', 'type', 'scroll', 'select', 'wait_for_element', 'dismiss_overlays'].includes(msg.action)
+      ? { ok: true, success: true }
+      : msg.action === 'api_catalog' ? { tabId: msg.params.tabId || 7, total: 1, count: 1, requests: [{ method: 'GET', url: '/api/users' }] }
       : msg.action === 'debug_bundle' ? { tabId: msg.params.tabId || 7, network: { logs: [] }, console: { logs: [] } }
       : msg.action === 'cdp_batch' ? { ok: true, completed: msg.params.commands.length, results: msg.params.commands.map(command => ({ method: command.method, ok: true })) }
       : msg.action === 'page_fetch' ? { ok: true, status: 200, request: msg.params, data: { items: [1] } }
@@ -178,7 +201,36 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   assert.match(debugBundleTool.description, /network and console/);
   const apiCatalogTool = list.result.tools.find(tool => tool.name === 'chrome_api_catalog');
   assert.match(apiCatalogTool.description, /never returns cookies/);
-  assert.ok(list.result.tools.length <= 30);
+  assert.ok(list.result.tools.length <= 50);
+  for (const name of [
+    'chrome_switch_tab', 'chrome_new_tab', 'chrome_navigate', 'chrome_snapshot', 'chrome_click',
+    'chrome_type', 'chrome_scroll', 'chrome_select', 'chrome_wait_for_element', 'chrome_dismiss_overlays'
+  ]) {
+    assert.ok(list.result.tools.some(tool => tool.name === name));
+  }
+  const universalCalls = [
+    ['chrome_switch_tab', { tabId: 7 }, 'switch_tab'],
+    ['chrome_new_tab', { url: 'https://example.com', active: false }, 'new_tab'],
+    ['chrome_navigate', { url: 'https://example.com', tabId: 7 }, 'navigate'],
+    ['chrome_snapshot', { tabId: 7 }, 'snapshot'],
+    ['chrome_click', { target: '#go', tabId: 7 }, 'click'],
+    ['chrome_type', { selector: '#query', text: 'bridge test', tabId: 7 }, 'type'],
+    ['chrome_scroll', { direction: 'down', amount: 250, tabId: 7 }, 'scroll'],
+    ['chrome_select', { selector: '#choice', value: 'first', tabId: 7 }, 'select'],
+    ['chrome_wait_for_element', { selector: '#ready', timeoutMs: 100, tabId: 7 }, 'wait_for_element'],
+    ['chrome_dismiss_overlays', { tabId: 7 }, 'dismiss_overlays']
+  ];
+  const firstUniversalAction = routedActions.length;
+  for (const [name, args] of universalCalls) {
+    const response = await rpc('tools/call', { name, arguments: args });
+    assert.equal(response.result.isError, false, `${name} should dispatch successfully`);
+  }
+  assert.deepEqual(
+    routedActions.slice(firstUniversalAction).map(({ action }) => action),
+    universalCalls.map(([, , action]) => action)
+  );
+  assert.deepEqual(routedActions[firstUniversalAction + 4].params.selector, '#go');
+  assert.equal(routedActions[firstUniversalAction + 2].params.forceNewWindow, false);
   assert.equal((await rpc('tools/call', { name: 'chrome_act', arguments: {} })).result.isError, true);
   const failed = await rpc('tools/call', { name: 'chrome_act', arguments: { steps: [{ action: 'click', selector: '#go' }] } });
   assert.equal(failed.result.isError, true);
@@ -244,7 +296,7 @@ test('real HTTP + WebSocket routing and stdio MCP compatibility', async t => {
   }
   const fullInit = await fullRpc('initialize', { protocolVersion: '2025-06-18' });
   assert.match(fullInit.result.instructions, /ULTRA-FAST/);
-  const click = await fullRpc('tools/call', { name: 'chrome_click', arguments: { target: '#go' } });
+  const click = await fullRpc('tools/call', { name: 'chrome_click', arguments: { target: '#expected-failure' } });
   assert.equal(click.result.isError, true);
   assert.equal(JSON.parse(click.result.content[0].text).ok, false);
   const challenge = await fullRpc('tools/call', { name: 'chrome_detect_challenge', arguments: {} });

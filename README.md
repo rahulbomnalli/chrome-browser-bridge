@@ -58,7 +58,7 @@ Run the configuration generator:
 ```bash
 node cli.js config antigravity
 ```
-Merge the generated output into your global config (`~/.gemini/config/mcp_config.json`) or workspace configuration (`.agents/mcp_config.json`). Generated Antigravity, Claude, and Codex configs use the task-focused `fast` profile: eleven tools centered on complete plans and high-impact batch/parallel operations, with compact successful results. Set `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full` to expose the broader catalogs.
+Merge the generated output into your global config (`~/.gemini/config/mcp_config.json`) or workspace configuration (`.agents/mcp_config.json`). Generated Antigravity, Claude, and Codex configs use the task-focused `fast` profile: 33 tools covering universal browser controls, workflows, extraction/API work, visual capture, downloads, page diagnostics, and change monitoring, with compact successful results. Set `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full` to expose the broader catalogs.
 
 ### 2. Claude Code
 Add to your project `.mcp.json` or run:
@@ -78,7 +78,7 @@ Actions that expose `timeoutMs` or `timeoutSec` accept per-call deadline overrid
 
 ## 🛠️ Core Tool Capabilities
 
-The server defaults to the fifteen-tool `fast` profile, and generated client configs set it explicitly. It includes complete workflows plus parallel URL research, batched extraction/API requests, idempotent `browser.execute_plan`, cancellation/status checkpoints, and bounded execution metrics. Specialized page-script, CDP, and macro tools remain available through `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full`.
+The server defaults to the 33-tool `fast` profile, and generated client configs set it explicitly. Alongside compound actions, it now exposes universal tab, navigation, snapshot, click, type, scroll, select, wait, and overlay controls. It also includes parallel URL research, batched extraction/API requests, screenshots, clean page reading, downloads, network/console diagnostics, page-change monitoring, idempotent `browser.execute_plan`, cancellation/status checkpoints, and bounded execution metrics. Prefer `chrome_act` or `chrome_workflow` to batch known multi-step work. Specialized CDP and macro tools remain available through `BRIDGE_TOOL_PROFILE=compact` or `BRIDGE_TOOL_PROFILE=full`.
 
 MCP guidance requires clients to ground claims in returned tool data, inspect unknown page state instead of guessing, and report task success only when the result and final verification support it. Legacy tools return structured browser results rather than unconditional success summaries.
 
@@ -91,9 +91,19 @@ MCP guidance requires clients to ground claims in returned tool data, inspect un
 | `chrome_act` | Batch same-page interactions (click, type, assert, extract) | Single-injection script with native setters and microtask reactivity |
 | `chrome_parallel_scrape` | Read independent known URLs concurrently | One call for multi-site page research |
 | `chrome_smart_navigate` | Switch to/reuse already-open tabs or navigate active tab | Eliminates duplicate tab churn and preserves SPA state |
+| `chrome_switch_tab` / `chrome_new_tab` / `chrome_navigate` | Control tabs and navigate directly | Generic browser controls for simple navigation tasks |
+| `chrome_snapshot` / `chrome_click` / `chrome_type` | Inspect and perform one grounded interaction | Direct controls when a compound action is unnecessary |
+| `chrome_scroll` / `chrome_select` / `chrome_wait_for_element` | Scroll, select a dropdown option, or wait for page state | Covers common single-step interactions |
+| `chrome_dismiss_overlays` | Dismiss common banners and dialogs | Unblocks page interaction without site-specific tooling |
 | `chrome_page_fetch_many` | Execute 1–20 API requests in active page session | Uses existing browser session cookies/headers concurrently |
 | `chrome_api_sequence` | Execute dependent API requests in one page injection | Reuses prior response values without model round-trips |
+| `chrome_api_catalog` | Inspect requests and resources already observed on the page | Finds known page APIs without guessing endpoints |
 | `chrome_extract_many` | Extract multiple CSS selectors in a single call | One round-trip extraction instead of repetitive DOM queries |
+| `chrome_read_page` | Read clean headings and text from the active page | Useful for articles and pages without selector-specific extraction |
+| `chrome_screenshot` | Capture the visible browser tab | Provides visual evidence for layout-dependent tasks |
+| `chrome_debug_bundle` | Read recent network and console events together | One call for routine page diagnostics |
+| `chrome_download_file` | Download a known URL or data URI through Chrome | Handles downloads without a separate browser workflow |
+| `chrome_watch` | Wait for a selected page region to change | Avoids polling snapshots for asynchronous page updates |
 | `whatsapp_send_message` | Auto-detect WhatsApp tab, resolve recipient, and send message | Handles App Lock and verification in one call |
 | `chrome_wait_for_user` | Prompt user for manual CAPTCHA / 2FA checkpoint | In-tab modal pauses agent safely until user completes verification |
 
