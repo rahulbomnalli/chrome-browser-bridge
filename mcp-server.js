@@ -56,10 +56,11 @@ const TOOLS = [
         timeoutMs: { type: 'integer', minimum: 1, maximum: 600000, default: 10000 },
         steps: { type: 'array', minItems: 1, maxItems: 100, items: {
           type: 'object', properties: {
-            action: { type: 'string', enum: ['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload'] },
-            selector: { type: 'string' }, role: { type: 'string' }, name: { type: 'string' },
+            action: { type: 'string', enum: ['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'scroll', 'check', 'uncheck'] },
+            selector: { type: 'string' }, target: { type: 'string' }, role: { type: 'string' }, name: { type: 'string' },
             label: { type: 'string' }, placeholder: { type: 'string' },
             value: { type: 'string' }, text: { type: 'string' },
+            direction: { type: 'string', enum: ['up', 'down'] }, amount: { type: 'integer' },
             equals: { type: 'string' }, attribute: { type: 'string' },
             trusted: { type: 'boolean', description: 'Type via trusted CDP input when the site ignores synthetic input. Adds browser calls.' },
             files: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: {

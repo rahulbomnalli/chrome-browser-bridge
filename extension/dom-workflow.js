@@ -6,7 +6,7 @@ async function runDomWorkflow(options) {
   const budget = options.timeoutMs ?? 10000;
   if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('Provide 1 to 100 steps');
   if (!Number.isFinite(budget) || budget <= 0 || budget > 600000) throw new Error('Invalid workflow timeout');
-  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'check', 'uncheck']);
+  const supported = new Set(['click', 'type', 'select', 'wait', 'assert', 'extract', 'upload', 'check', 'uncheck', 'scroll']);
   // Helper to parse and normalize Playwright pseudo-selectors and snapshot references
   function parsePlaywrightSelector(raw) {
     if (typeof raw !== 'string') return null;
@@ -40,6 +40,30 @@ async function runDomWorkflow(options) {
   // Validate the complete plan before performing any mutation.
   for (const step of steps) {
     if (!step || !supported.has(step.action)) throw new Error('Each step needs a supported action');
+    // Universal parameter resilience across all LLM models and websites:
+    // A) If action is 'scroll' and no target is specified, default to scrollingElement or html/body
+    if (step.action === 'scroll' && !step.selector && !step.role && !step.label && !step.placeholder) {
+      step.selector = 'html, body';
+    }
+    // B) If step.value is missing for type/select, but step.text is provided, map text -> value
+    if (['type', 'select'].includes(step.action) && step.value === undefined && typeof step.text === 'string') {
+      step.value = step.text;
+      delete step.text;
+    }
+    // C) If step has target but no selector/role/label/placeholder, map target -> selector
+    if (!step.selector && !step.role && !step.label && !step.placeholder && typeof step.target === 'string' && step.target.trim()) {
+      const t = step.target.trim();
+      step.selector = (t.startsWith('@') || t.startsWith('#') || t.startsWith('.') || t.includes('[') || t.includes('>')) ? t : `text=${JSON.stringify(t)}`;
+    }
+    // D) If step has bare text without selector/role/label/placeholder, map text -> selector: text="<text>"
+    if (!step.selector && !step.role && !step.label && !step.placeholder && typeof step.text === 'string' && step.text.trim()) {
+      step.selector = `text=${JSON.stringify(step.text.trim())}`;
+    }
+    // E) If step has bare name without role/selector/label/placeholder, default role to 'button' for click, 'textbox' for type
+    if (!step.selector && !step.role && !step.label && !step.placeholder && typeof step.name === 'string' && step.name.trim()) {
+      step.role = step.action === 'type' ? 'textbox' : 'button';
+    }
+
     const targets = ['selector', 'role', 'label', 'placeholder'].filter(key => step[key] !== undefined);
     if (targets.length !== 1) throw new Error('Each step needs exactly one nonempty selector, role, label, or placeholder');
     const targetVal = step[targets[0]];
@@ -91,7 +115,15 @@ async function runDomWorkflow(options) {
         if (!document.createTreeWalker || typeof NodeFilter === 'undefined') continue;
         const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
         let node;
-        while ((node = walker.nextNode())) if (node.shadowRoot) roots.push(node.shadowRoot);
+        while ((node = walker.nextNode())) {
+          if (node.shadowRoot && !roots.includes(node.shadowRoot)) roots.push(node.shadowRoot);
+          if (node.tagName === 'IFRAME') {
+            try {
+              const doc = node.contentDocument;
+              if (doc && !roots.includes(doc)) roots.push(doc);
+            } catch (_) {}
+          }
+        }
       }
     }
     return rootIndex.roots.flatMap(root => {
@@ -197,7 +229,10 @@ async function runDomWorkflow(options) {
 
       // 5. Button tag specificity over wrapper divs
       if (step.action === 'click' || step.role === 'button') {
-        const directButtons = matches.filter(el => el.tagName?.toLowerCase() === 'button' || el.tagName?.toLowerCase() === 'a');
+        const directButtons = matches.filter(el => {
+          const tag = el.tagName?.toLowerCase();
+          return tag === 'button' || tag === 'a' || el.getAttribute('role') === 'button' || el.hasAttribute('tabindex');
+        });
         if (directButtons.length === 1) return directButtons[0];
         if (directButtons.length > 1) matches = directButtons;
       }
@@ -215,9 +250,9 @@ async function runDomWorkflow(options) {
 
     const el = matches[0];
     if (!el) return null;
-    if (step.text !== undefined && !el.textContent.includes(step.text)) return null;
+    if (step.text !== undefined && !(el.textContent || '').includes(step.text)) return null;
     if (step.equals !== undefined && String('value' in el ? el.value : el.textContent) !== step.equals) return null;
-    if (['click', 'type', 'select', 'upload'].includes(step.action) && (el.disabled || el.getAttribute('aria-disabled') === 'true' || el.readOnly)) return null;
+    if (['click', 'type', 'select', 'upload'].includes(step.action) && (el.disabled || el.getAttribute?.('aria-disabled') === 'true' || el.readOnly)) return null;
     return el;
   }
   async function ready(step) {
@@ -268,8 +303,19 @@ async function runDomWorkflow(options) {
           const rect = el.getBoundingClientRect();
           const root = el.getRootNode?.() || document;
           const hit = (root.elementFromPoint ? root : document).elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          if (!hit || !(hit === el || el.contains(hit))) throw new Error(`Obstructed target: ${targetName(step)}`);
+          const isHitOk = Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el) ||
+            (root.host && (hit === root.host || hit.contains(root.host) || root.host.contains(hit)))));
+          if (!isHitOk) throw new Error(`Obstructed target: ${targetName(step)}`);
           el.click();
+          break;
+        }
+        case 'scroll': {
+          const direction = step.direction || 'down';
+          const amount = Number(step.amount ?? 400);
+          const delta = direction === 'up' ? -amount : amount;
+          const target = (el && el !== document.body && el !== document.documentElement) ? el : (document.scrollingElement || window);
+          if (typeof target.scrollBy === 'function') target.scrollBy({ top: delta, behavior: 'smooth' });
+          else window.scrollBy(0, delta);
           break;
         }
         case 'check':
@@ -302,13 +348,16 @@ async function runDomWorkflow(options) {
             } catch (_) {}
             if (!execOk) el.textContent = step.value;
           } else if (!step.trusted) {
-            // Support React/Vue controlled inputs via prototype setter + tracker reset
+            // Support React/Vue/Svelte/Angular controlled inputs via prototype setter + tracker reset
             const tracker = el._valueTracker;
             if (tracker) {
               tracker.setValue(tracker.getValue() === '' ? 'a' : '');
             }
-            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, step.value);
+            const isTextarea = el instanceof HTMLTextAreaElement || el.tagName?.toLowerCase() === 'textarea';
+            const proto = isTextarea ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+            if (descriptor?.set) descriptor.set.call(el, step.value);
+            else el.value = step.value;
           }
           if (!step.trusted) {
             try {
@@ -327,9 +376,13 @@ async function runDomWorkflow(options) {
           if (step.trusted || actualText !== expectedText) {
             if (el.isContentEditable) {
               const range = document.createRange(); range.selectNodeContents(el);
-              const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
-            } else if (typeof el.select === 'function') el.select();
-            else throw new Error('Field does not support trusted text replacement');
+              const selection = window.getSelection ? window.getSelection() : null;
+              if (selection) { selection.removeAllRanges(); selection.addRange(range); }
+            } else if (typeof el.select === 'function') {
+              el.select();
+            } else {
+              try { el.focus(); document.execCommand('selectAll', false, null); } catch (_) {}
+            }
             const token = crypto.randomUUID();
             globalThis.__bridgeTrustedInput = { token, el, value: step.value };
             return { ok: false, needsTrustedInput: true, token, failedStep: index, completed: results.length, results, durationMs: performance.now() - started };
